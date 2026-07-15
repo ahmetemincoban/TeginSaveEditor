@@ -245,7 +245,16 @@ public sealed class MarshalWriter
     /// dumps it as Bignum — writing it as Fixnum would round-trip as a
     /// negative number on any Ruby built with a 32-bit C `long` (still true
     /// of Windows Ruby).</summary>
-    private static bool FitsFixnumEncoding(long x) => x >= int.MinValue && x <= int.MaxValue;
+    // Ruby's marshal.c decides Fixnum-vs-Bignum on the TAGGED VALUE
+    // (RSHIFT((long)obj, 31) where obj == value*2+1), so the real cutoff is
+    // [-2^30, 2^30-1], not the full int32 range. Staying inside it matters
+    // beyond byte fidelity: 32-bit-long Ruby builds (Windows Ruby, i.e. every
+    // RPG Maker runtime) overflow LONG2FIX when loading a 4-byte Fixnum in
+    // [2^30, 2^31), e.g. 1_700_000_000 loads back as -447_483_648.
+    private const long FixnumMax = (1L << 30) - 1;
+    private const long FixnumMin = -(1L << 30);
+
+    private static bool FitsFixnumEncoding(long x) => x >= FixnumMin && x <= FixnumMax;
 
     private void WriteBignumBody(BigInteger big)
     {

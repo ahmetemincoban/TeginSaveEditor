@@ -83,12 +83,19 @@ public class MarshalReaderWriterTests
     }
 
     [Fact]
-    public void Int32BoundaryValues_StayFixnum_OneBeyondPromotesToBignum()
+    public void FixnumBoundaryValues_MatchRealRubyExactly()
     {
-        Assert.Equal((byte)'i', new MarshalWriter().Write((long)int.MaxValue)[2]);
-        Assert.Equal((byte)'i', new MarshalWriter().Write((long)int.MinValue)[2]);
-        Assert.Equal((byte)'l', new MarshalWriter().Write((long)int.MaxValue + 1)[2]);
-        Assert.Equal((byte)'l', new MarshalWriter().Write((long)int.MinValue - 1)[2]);
+        // Ruby's cutoff is the tagged-VALUE range [-2^30, 2^30-1], NOT int32:
+        // marshal.c shifts the tagged pointer (value*2+1) by 31. All expected
+        // bytes below are verbatim Marshal.dump output from Ruby 3.3 x64.
+        // Writing [2^30, 2^31) as Fixnum corrupts on 32-bit-long Ruby builds
+        // (Windows Ruby loads a 4-byte Fixnum 1_700_000_000 as -447_483_648).
+        Assert.Equal(Convert.FromHexString("04086904FFFFFF3F"), new MarshalWriter().Write((1L << 30) - 1)); // 2^30-1: Fixnum
+        Assert.Equal(Convert.FromHexString("040869FC000000C0"), new MarshalWriter().Write(-(1L << 30)));    // -2^30: Fixnum
+        Assert.Equal(Convert.FromHexString("04086C2B0700000040"), new MarshalWriter().Write(1L << 30));     // 2^30: Bignum
+        Assert.Equal(Convert.FromHexString("04086C2D0701000040"), new MarshalWriter().Write(-(1L << 30) - 1)); // -2^30-1: Bignum
+        Assert.Equal(Convert.FromHexString("04086C2B07FFFFFF7F"), new MarshalWriter().Write((long)int.MaxValue)); // int32 max: Bignum
+        Assert.Equal(Convert.FromHexString("04086C2B0700F15365"), new MarshalWriter().Write(1_700_000_000L)); // timestamp: Bignum
     }
 
     [Fact]
