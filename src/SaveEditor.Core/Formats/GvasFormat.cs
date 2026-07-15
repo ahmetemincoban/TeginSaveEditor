@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
 
@@ -140,7 +141,7 @@ internal sealed class GvasReader(byte[] data)
                 return prop;
             case "Int64Property":
                 SkipGuidFlag(prop);
-                prop["value"] = _r.ReadInt64();
+                prop["value"] = GvasInt.ToNode(_r.ReadInt64());
                 return prop;
             case "UInt16Property":
                 SkipGuidFlag(prop);
@@ -152,7 +153,7 @@ internal sealed class GvasReader(byte[] data)
                 return prop;
             case "UInt64Property":
                 SkipGuidFlag(prop);
-                prop["value"] = _r.ReadUInt64();
+                prop["value"] = GvasInt.ToNode(_r.ReadUInt64());
                 return prop;
             case "FloatProperty":
                 SkipGuidFlag(prop);
@@ -193,7 +194,18 @@ internal sealed class GvasReader(byte[] data)
                 prop["structType"] = structType;
                 prop["structGuid"] = Convert.ToHexString(_r.ReadBytes(16));
                 SkipGuidFlag(prop);
-                prop["value"] = ReadStructBody(structType, size);
+                long bodyStart = _r.BaseStream.Position;
+                JsonNode value = ReadStructBody(structType, size);
+                if (_r.BaseStream.Position != bodyStart + size)
+                {
+                    // A struct parsed "successfully" but didn't consume exactly the
+                    // declared byte span: our interpretation of the struct's shape is
+                    // wrong, even though nothing threw. Trust the size field instead.
+                    _r.BaseStream.Position = bodyStart;
+                    value = new JsonObject { ["__raw"] = Convert.ToBase64String(_r.ReadBytes(size)) };
+                    HadRawFallback = true;
+                }
+                prop["value"] = value;
                 return prop;
             }
 
@@ -244,7 +256,7 @@ internal sealed class GvasReader(byte[] data)
         switch (innerType)
         {
             case "IntProperty": for (int i = 0; i < count; i++) items.Add(_r.ReadInt32()); break;
-            case "Int64Property": for (int i = 0; i < count; i++) items.Add(_r.ReadInt64()); break;
+            case "Int64Property": for (int i = 0; i < count; i++) items.Add(GvasInt.ToNode(_r.ReadInt64())); break;
             case "UInt32Property": for (int i = 0; i < count; i++) items.Add(_r.ReadUInt32()); break;
             case "FloatProperty": for (int i = 0; i < count; i++) items.Add(GvasFloat.ToNode(_r.ReadSingle())); break;
             case "DoubleProperty": for (int i = 0; i < count; i++) items.Add(GvasFloat.ToNode(_r.ReadDouble())); break;
@@ -408,6 +420,42 @@ internal static class GvasFloat
     }
 }
 
+/// <summary>
+/// Int64/UInt64 values whose magnitude exceeds JavaScript's safe integer
+/// range (2^53-1) are carried as tagged strings so browser round-trips
+/// don't silently lose precision, mirroring <see cref="GvasFloat"/>.
+/// </summary>
+internal static class GvasInt
+{
+    private const long SafeMax = 9_007_199_254_740_991L; // 2^53 - 1
+
+    public static JsonNode ToNode(long v)
+    {
+        if (v > SafeMax || v < -SafeMax) return v.ToString(CultureInfo.InvariantCulture);
+        return v;
+    }
+
+    public static JsonNode ToNode(ulong v)
+    {
+        if (v > (ulong)SafeMax) return v.ToString(CultureInfo.InvariantCulture);
+        return v;
+    }
+
+    public static long GetInt64(JsonNode node)
+    {
+        var v = node.AsValue();
+        if (v.TryGetValue(out string? s)) return long.Parse(s!, CultureInfo.InvariantCulture);
+        return v.GetValue<long>();
+    }
+
+    public static ulong GetUInt64(JsonNode node)
+    {
+        var v = node.AsValue();
+        if (v.TryGetValue(out string? s)) return ulong.Parse(s!, CultureInfo.InvariantCulture);
+        return v.GetValue<ulong>();
+    }
+}
+
 internal sealed class GvasWriter
 {
     private BinaryWriter _w = null!;
@@ -500,10 +548,10 @@ internal sealed class GvasWriter
             case "IntProperty": _w.Write(prop["value"]!.GetValue<int>()); return [];
             case "Int8Property": _w.Write(prop["value"]!.GetValue<sbyte>()); return [];
             case "Int16Property": _w.Write(prop["value"]!.GetValue<short>()); return [];
-            case "Int64Property": _w.Write(prop["value"]!.GetValue<long>()); return [];
+            case "Int64Property": _w.Write(GvasInt.GetInt64(prop["value"]!)); return [];
             case "UInt16Property": _w.Write(prop["value"]!.GetValue<ushort>()); return [];
             case "UInt32Property": _w.Write(prop["value"]!.GetValue<uint>()); return [];
-            case "UInt64Property": _w.Write(prop["value"]!.GetValue<ulong>()); return [];
+            case "UInt64Property": _w.Write(GvasInt.GetUInt64(prop["value"]!)); return [];
             case "FloatProperty": _w.Write(GvasFloat.GetSingle(prop["value"]!)); return [];
             case "DoubleProperty": _w.Write(GvasFloat.GetDouble(prop["value"]!)); return [];
 
@@ -570,7 +618,7 @@ internal sealed class GvasWriter
         switch (innerType)
         {
             case "IntProperty": foreach (var i in items) _w.Write(i!.GetValue<int>()); break;
-            case "Int64Property": foreach (var i in items) _w.Write(i!.GetValue<long>()); break;
+            case "Int64Property": foreach (var i in items) _w.Write(GvasInt.GetInt64(i!)); break;
             case "UInt32Property": foreach (var i in items) _w.Write(i!.GetValue<uint>()); break;
             case "FloatProperty": foreach (var i in items) _w.Write(GvasFloat.GetSingle(i!)); break;
             case "DoubleProperty": foreach (var i in items) _w.Write(GvasFloat.GetDouble(i!)); break;

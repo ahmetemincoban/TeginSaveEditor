@@ -11,9 +11,13 @@ namespace SaveEditor.Core.Pickle;
 /// </summary>
 public sealed class PickleWriter
 {
+    // See PyJson.MaxDepth: kept well below where a real stack overflow occurs.
+    private const int MaxDepth = 500;
+
     private readonly MemoryStream _out = new();
     private readonly Dictionary<object, int> _memo = new(ReferenceEqualityComparer.Instance);
     private int _minProtocol = 2;
+    private int _depth;
 
     public byte[] Write(object? root, int requestedProtocol = 2)
     {
@@ -30,6 +34,23 @@ public sealed class PickleWriter
     }
 
     private void Save(object? value)
+    {
+        if (++_depth > MaxDepth)
+        {
+            _depth--;
+            throw new SaveFormatException("Veri çok derin iç içe geçmiş.");
+        }
+        try
+        {
+            SaveCore(value);
+        }
+        finally
+        {
+            _depth--;
+        }
+    }
+
+    private void SaveCore(object? value)
     {
         switch (value)
         {

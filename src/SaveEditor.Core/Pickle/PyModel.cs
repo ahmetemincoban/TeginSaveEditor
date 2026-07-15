@@ -41,16 +41,35 @@ public sealed class PyObject
 /// </summary>
 public static class PyJson
 {
+    private const long SafeIntMax = 9_007_199_254_740_991L; // 2^53 - 1
+
+    // Chosen well below where a real stack overflow occurs (observed ~1500
+    // frames for Build() with a default 1MB thread stack), leaving headroom
+    // for whatever the caller's own stack usage already was.
+    private const int MaxDepth = 500;
+
+    /// <summary>Tracks recursion depth across a whole traversal so deeply nested
+    /// graphs raise a catchable error instead of a process-killing StackOverflow.</summary>
+    private sealed class DepthGuard
+    {
+        private int _depth;
+        public void Enter()
+        {
+            if (++_depth > MaxDepth) throw new SaveFormatException("Veri çok derin iç içe geçmiş.");
+        }
+        public void Exit() => _depth--;
+    }
+
     public static JsonNode? ToJson(object? root)
     {
         var counts = new Dictionary<object, int>(ReferenceEqualityComparer.Instance);
-        CountRefs(root, counts);
+        CountRefs(root, counts, new DepthGuard());
         var ids = new Dictionary<object, int>(ReferenceEqualityComparer.Instance);
         int nextId = 1;
-        return Emit(root, counts, ids, ref nextId);
+        return Emit(root, counts, ids, ref nextId, new DepthGuard());
     }
 
-    private static void CountRefs(object? value, Dictionary<object, int> counts)
+    private static void CountRefs(object? value, Dictionary<object, int> counts, DepthGuard depth)
     {
         if (value is not (PyTuple or PyList or PyDict or PySet or PyObject or PyPersId)) return;
         if (counts.TryGetValue(value, out int c))
@@ -59,34 +78,46 @@ public static class PyJson
             return;
         }
         counts[value] = 1;
-        switch (value)
+        depth.Enter();
+        try
         {
-            case PyTuple t: foreach (var i in t.Items) CountRefs(i, counts); break;
-            case PyList l: foreach (var i in l.Items) CountRefs(i, counts); break;
-            case PySet s: foreach (var i in s.Items) CountRefs(i, counts); break;
-            case PyDict d:
-                foreach (var kv in d.Items) { CountRefs(kv.Key, counts); CountRefs(kv.Value, counts); }
-                break;
-            case PyObject o:
-                CountRefs(o.Callable, counts);
-                foreach (var i in o.Args.Items) CountRefs(i, counts);
-                CountRefs(o.KwArgs, counts);
-                if (o.HasState) CountRefs(o.State, counts);
-                if (o.Appends is not null) foreach (var i in o.Appends.Items) CountRefs(i, counts);
-                if (o.SetItems is not null)
-                    foreach (var kv in o.SetItems.Items) { CountRefs(kv.Key, counts); CountRefs(kv.Value, counts); }
-                break;
-            case PyPersId p: CountRefs(p.Value, counts); break;
+            switch (value)
+            {
+                case PyTuple t: foreach (var i in t.Items) CountRefs(i, counts, depth); break;
+                case PyList l: foreach (var i in l.Items) CountRefs(i, counts, depth); break;
+                case PySet s: foreach (var i in s.Items) CountRefs(i, counts, depth); break;
+                case PyDict d:
+                    foreach (var kv in d.Items) { CountRefs(kv.Key, counts, depth); CountRefs(kv.Value, counts, depth); }
+                    break;
+                case PyObject o:
+                    CountRefs(o.Callable, counts, depth);
+                    foreach (var i in o.Args.Items) CountRefs(i, counts, depth);
+                    CountRefs(o.KwArgs, counts, depth);
+                    if (o.HasState) CountRefs(o.State, counts, depth);
+                    if (o.Appends is not null) foreach (var i in o.Appends.Items) CountRefs(i, counts, depth);
+                    if (o.SetItems is not null)
+                        foreach (var kv in o.SetItems.Items) { CountRefs(kv.Key, counts, depth); CountRefs(kv.Value, counts, depth); }
+                    break;
+                case PyPersId p: CountRefs(p.Value, counts, depth); break;
+            }
+        }
+        finally
+        {
+            depth.Exit();
         }
     }
 
-    private static JsonNode? Emit(object? value, Dictionary<object, int> counts, Dictionary<object, int> ids, ref int nextId)
+    private static JsonNode? Emit(object? value, Dictionary<object, int> counts, Dictionary<object, int> ids, ref int nextId, DepthGuard depth)
     {
         switch (value)
         {
             case null: return null;
             case bool b: return b;
-            case long l: return l;
+            case long l:
+                // JS Number loses precision beyond 2^53-1; tag large longs like BigInteger.
+                if (l > SafeIntMax || l < -SafeIntMax)
+                    return new JsonObject { ["py"] = "long", ["v"] = l.ToString(CultureInfo.InvariantCulture) };
+                return l;
             case BigInteger big:
                 return new JsonObject { ["py"] = "long", ["v"] = big.ToString(CultureInfo.InvariantCulture) };
             case double d:
@@ -119,62 +150,70 @@ public static class PyJson
         }
 
         JsonNode? node;
-        switch (value)
+        depth.Enter();
+        try
         {
-            case PyList list:
+            switch (value)
             {
-                var arr = new JsonArray();
-                foreach (var item in list.Items) arr.Add(Emit(item, counts, ids, ref nextId));
-                node = arr;
-                break;
-            }
-            case PyTuple tuple:
-            {
-                var arr = new JsonArray();
-                foreach (var item in tuple.Items) arr.Add(Emit(item, counts, ids, ref nextId));
-                node = new JsonObject { ["py"] = "tuple", ["items"] = arr };
-                break;
-            }
-            case PySet set:
-            {
-                var arr = new JsonArray();
-                foreach (var item in set.Items) arr.Add(Emit(item, counts, ids, ref nextId));
-                node = new JsonObject { ["py"] = set.Frozen ? "frozenset" : "set", ["items"] = arr };
-                break;
-            }
-            case PyDict dict:
-                node = EmitDict(dict, counts, ids, ref nextId);
-                break;
-            case PyGlobal g:
-                node = new JsonObject { ["py"] = "global", ["module"] = g.Module, ["name"] = g.Name };
-                break;
-            case PyObject o:
-            {
-                var obj = new JsonObject
+                case PyList list:
                 {
-                    ["py"] = o.Kind,
-                    ["callable"] = Emit(o.Callable, counts, ids, ref nextId),
-                };
-                var args = new JsonArray();
-                foreach (var a in o.Args.Items) args.Add(Emit(a, counts, ids, ref nextId));
-                obj["args"] = args;
-                if (o.Kind == "newobj_ex") obj["kwargs"] = Emit(o.KwArgs, counts, ids, ref nextId);
-                if (o.Appends is not null)
-                {
-                    var appends = new JsonArray();
-                    foreach (var i in o.Appends.Items) appends.Add(Emit(i, counts, ids, ref nextId));
-                    obj["appends"] = appends;
+                    var arr = new JsonArray();
+                    foreach (var item in list.Items) arr.Add(Emit(item, counts, ids, ref nextId, depth));
+                    node = arr;
+                    break;
                 }
-                if (o.SetItems is not null) obj["setitems"] = EmitDict(o.SetItems, counts, ids, ref nextId);
-                if (o.HasState) obj["state"] = Emit(o.State, counts, ids, ref nextId);
-                node = obj;
-                break;
+                case PyTuple tuple:
+                {
+                    var arr = new JsonArray();
+                    foreach (var item in tuple.Items) arr.Add(Emit(item, counts, ids, ref nextId, depth));
+                    node = new JsonObject { ["py"] = "tuple", ["items"] = arr };
+                    break;
+                }
+                case PySet set:
+                {
+                    var arr = new JsonArray();
+                    foreach (var item in set.Items) arr.Add(Emit(item, counts, ids, ref nextId, depth));
+                    node = new JsonObject { ["py"] = set.Frozen ? "frozenset" : "set", ["items"] = arr };
+                    break;
+                }
+                case PyDict dict:
+                    node = EmitDict(dict, counts, ids, ref nextId, depth);
+                    break;
+                case PyGlobal g:
+                    node = new JsonObject { ["py"] = "global", ["module"] = g.Module, ["name"] = g.Name };
+                    break;
+                case PyObject o:
+                {
+                    var obj = new JsonObject
+                    {
+                        ["py"] = o.Kind,
+                        ["callable"] = Emit(o.Callable, counts, ids, ref nextId, depth),
+                    };
+                    var args = new JsonArray();
+                    foreach (var a in o.Args.Items) args.Add(Emit(a, counts, ids, ref nextId, depth));
+                    obj["args"] = args;
+                    if (o.Kind == "newobj_ex") obj["kwargs"] = Emit(o.KwArgs, counts, ids, ref nextId, depth);
+                    if (o.Appends is not null)
+                    {
+                        var appends = new JsonArray();
+                        foreach (var i in o.Appends.Items) appends.Add(Emit(i, counts, ids, ref nextId, depth));
+                        obj["appends"] = appends;
+                    }
+                    if (o.SetItems is not null) obj["setitems"] = EmitDict(o.SetItems, counts, ids, ref nextId, depth);
+                    if (o.HasState) obj["state"] = Emit(o.State, counts, ids, ref nextId, depth);
+                    node = obj;
+                    break;
+                }
+                case PyPersId p:
+                    node = new JsonObject { ["py"] = "persid", ["value"] = Emit(p.Value, counts, ids, ref nextId, depth) };
+                    break;
+                default:
+                    throw new SaveFormatException($"Bilinmeyen pickle değeri: {value.GetType().Name}");
             }
-            case PyPersId p:
-                node = new JsonObject { ["py"] = "persid", ["value"] = Emit(p.Value, counts, ids, ref nextId) };
-                break;
-            default:
-                throw new SaveFormatException($"Bilinmeyen pickle değeri: {value.GetType().Name}");
+        }
+        finally
+        {
+            depth.Exit();
         }
 
         if (shared)
@@ -184,7 +223,7 @@ public static class PyJson
         return node;
     }
 
-    private static JsonNode EmitDict(PyDict dict, Dictionary<object, int> counts, Dictionary<object, int> ids, ref int nextId)
+    private static JsonNode EmitDict(PyDict dict, Dictionary<object, int> counts, Dictionary<object, int> ids, ref int nextId, DepthGuard depth)
     {
         bool plainKeys = dict.Items.All(kv => kv.Key is string k && k != "py");
         bool uniqueKeys = plainKeys && dict.Items.Select(kv => (string)kv.Key!).Distinct().Count() == dict.Items.Count;
@@ -192,7 +231,7 @@ public static class PyJson
         {
             var obj = new JsonObject();
             foreach (var kv in dict.Items)
-                obj[(string)kv.Key!] = Emit(kv.Value, counts, ids, ref nextId);
+                obj[(string)kv.Key!] = Emit(kv.Value, counts, ids, ref nextId, depth);
             return obj;
         }
         var items = new JsonArray();
@@ -200,8 +239,8 @@ public static class PyJson
         {
             items.Add(new JsonArray
             {
-                Emit(kv.Key, counts, ids, ref nextId),
-                Emit(kv.Value, counts, ids, ref nextId),
+                Emit(kv.Key, counts, ids, ref nextId, depth),
+                Emit(kv.Value, counts, ids, ref nextId, depth),
             });
         }
         return new JsonObject { ["py"] = "dict", ["items"] = items };
@@ -210,57 +249,65 @@ public static class PyJson
     public static object? FromJson(JsonNode? node)
     {
         var byId = new Dictionary<int, object>();
-        return Build(node, byId);
+        return Build(node, byId, new DepthGuard());
     }
 
-    private static object? Build(JsonNode? node, Dictionary<int, object> byId)
+    private static object? Build(JsonNode? node, Dictionary<int, object> byId, DepthGuard depth)
     {
-        switch (node)
+        depth.Enter();
+        try
         {
-            case null: return null;
-            case JsonValue v:
+            switch (node)
             {
-                if (v.TryGetValue(out bool b)) return b;
-                if (v.TryGetValue(out long l)) return l;
-                if (v.TryGetValue(out int i)) return (long)i;
-                if (v.TryGetValue(out uint ui)) return (long)ui;
-                if (v.TryGetValue(out short sh)) return (long)sh;
-                if (v.TryGetValue(out byte by)) return (long)by;
-                if (v.TryGetValue(out ulong ul)) return ul <= long.MaxValue ? (long)ul : new BigInteger(ul);
-                if (v.TryGetValue(out double d)) return d;
-                if (v.TryGetValue(out float f)) return (double)f;
-                if (v.TryGetValue(out decimal m)) return (double)m;
-                if (v.TryGetValue(out string? s)) return s!;
-                // Big integers and high-precision decimals: fall back to raw JSON text.
-                if (v.TryGetValue(out JsonElement el))
+                case null: return null;
+                case JsonValue v:
                 {
-                    string raw = el.GetRawText();
-                    if (BigInteger.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var big)) return big;
-                    if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double dd)) return dd;
+                    if (v.TryGetValue(out bool b)) return b;
+                    if (v.TryGetValue(out long l)) return l;
+                    if (v.TryGetValue(out int i)) return (long)i;
+                    if (v.TryGetValue(out uint ui)) return (long)ui;
+                    if (v.TryGetValue(out short sh)) return (long)sh;
+                    if (v.TryGetValue(out byte by)) return (long)by;
+                    if (v.TryGetValue(out ulong ul)) return ul <= long.MaxValue ? (long)ul : new BigInteger(ul);
+                    if (v.TryGetValue(out double d)) return d;
+                    if (v.TryGetValue(out float f)) return (double)f;
+                    if (v.TryGetValue(out decimal m)) return (double)m;
+                    if (v.TryGetValue(out string? s)) return s!;
+                    // Big integers and high-precision decimals: fall back to raw JSON text.
+                    if (v.TryGetValue(out JsonElement el))
+                    {
+                        string raw = el.GetRawText();
+                        if (BigInteger.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var big)) return big;
+                        if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double dd)) return dd;
+                    }
+                    throw new SaveFormatException($"Değer çözümlenemedi: {v.ToJsonString()}");
                 }
-                throw new SaveFormatException($"Değer çözümlenemedi: {v.ToJsonString()}");
+                case JsonArray arr:
+                {
+                    var list = new PyList();
+                    foreach (var item in arr) list.Items.Add(Build(item, byId, depth));
+                    return list;
+                }
+                case JsonObject obj when obj["py"] is JsonValue tagValue && tagValue.TryGetValue(out string? tag):
+                    return BuildTagged(obj, tag!, byId, depth);
+                case JsonObject obj:
+                {
+                    var dict = new PyDict();
+                    foreach (var (key, value) in obj)
+                        dict.Items.Add(new(key, Build(value, byId, depth)));
+                    return dict;
+                }
+                default:
+                    throw new SaveFormatException("Geçersiz düğüm.");
             }
-            case JsonArray arr:
-            {
-                var list = new PyList();
-                foreach (var item in arr) list.Items.Add(Build(item, byId));
-                return list;
-            }
-            case JsonObject obj when obj["py"] is JsonValue tagValue && tagValue.TryGetValue(out string? tag):
-                return BuildTagged(obj, tag!, byId);
-            case JsonObject obj:
-            {
-                var dict = new PyDict();
-                foreach (var (key, value) in obj)
-                    dict.Items.Add(new(key, Build(value, byId)));
-                return dict;
-            }
-            default:
-                throw new SaveFormatException("Geçersiz düğüm.");
+        }
+        finally
+        {
+            depth.Exit();
         }
     }
 
-    private static object? BuildTagged(JsonObject obj, string tag, Dictionary<int, object> byId)
+    private static object? BuildTagged(JsonObject obj, string tag, Dictionary<int, object> byId, DepthGuard depth)
     {
         switch (tag)
         {
@@ -282,12 +329,12 @@ public static class PyJson
                     {
                         var list = new PyList();
                         byId[id] = list;
-                        foreach (var item in arr) list.Items.Add(Build(item, byId));
+                        foreach (var item in arr) list.Items.Add(Build(item, byId, depth));
                         return list;
                     }
                     case JsonObject inner when inner["py"] is JsonValue tv && tv.TryGetValue(out string? innerTag):
                     {
-                        object? result = BuildTaggedShared(inner, innerTag!, id, byId);
+                        object? result = BuildTaggedShared(inner, innerTag!, id, byId, depth);
                         return result;
                     }
                     case JsonObject innerObj:
@@ -295,12 +342,12 @@ public static class PyJson
                         var dict = new PyDict();
                         byId[id] = dict;
                         foreach (var (key, value) in innerObj)
-                            dict.Items.Add(new(key, Build(value, byId)));
+                            dict.Items.Add(new(key, Build(value, byId, depth)));
                         return dict;
                     }
                     default:
                     {
-                        object? plain = Build(valueNode, byId);
+                        object? plain = Build(valueNode, byId, depth);
                         if (plain is not null) byId[id] = plain;
                         return plain;
                     }
@@ -309,14 +356,14 @@ public static class PyJson
             case "tuple":
             {
                 var tuple = new PyTuple();
-                foreach (var item in (JsonArray)obj["items"]!) tuple.Items.Add(Build(item, byId));
+                foreach (var item in (JsonArray)obj["items"]!) tuple.Items.Add(Build(item, byId, depth));
                 return tuple;
             }
             case "set":
             case "frozenset":
             {
                 var set = new PySet { Frozen = tag == "frozenset" };
-                foreach (var item in (JsonArray)obj["items"]!) set.Items.Add(Build(item, byId));
+                foreach (var item in (JsonArray)obj["items"]!) set.Items.Add(Build(item, byId, depth));
                 return set;
             }
             case "dict":
@@ -325,14 +372,17 @@ public static class PyJson
                 foreach (var pair in (JsonArray)obj["items"]!)
                 {
                     var kv = (JsonArray)pair!;
-                    dict.Items.Add(new(Build(kv[0], byId), Build(kv[1], byId)));
+                    dict.Items.Add(new(Build(kv[0], byId, depth), Build(kv[1], byId, depth)));
                 }
                 return dict;
             }
             case "bytes":
                 return Convert.FromBase64String(obj["b64"]!.GetValue<string>());
             case "long":
-                return BigInteger.Parse(obj["v"]!.GetValue<string>(), CultureInfo.InvariantCulture);
+            {
+                var big = BigInteger.Parse(obj["v"]!.GetValue<string>(), CultureInfo.InvariantCulture);
+                return big >= long.MinValue && big <= long.MaxValue ? (long)big : big;
+            }
             case "float":
             {
                 var v = obj["v"]!;
@@ -351,17 +401,17 @@ public static class PyJson
             case "global":
                 return new PyGlobal { Module = obj["module"]!.GetValue<string>(), Name = obj["name"]!.GetValue<string>() };
             case "persid":
-                return new PyPersId { Value = Build(obj["value"], byId) };
+                return new PyPersId { Value = Build(obj["value"], byId, depth) };
             case "reduce":
             case "newobj":
             case "newobj_ex":
-                return BuildObject(obj, tag, null, byId);
+                return BuildObject(obj, tag, null, byId, depth);
             default:
                 throw new SaveFormatException($"Bilinmeyen py etiketi: {tag}");
         }
     }
 
-    private static object? BuildTaggedShared(JsonObject inner, string innerTag, int id, Dictionary<int, object> byId)
+    private static object? BuildTaggedShared(JsonObject inner, string innerTag, int id, Dictionary<int, object> byId, DepthGuard depth)
     {
         switch (innerTag)
         {
@@ -372,7 +422,7 @@ public static class PyJson
                 foreach (var pair in (JsonArray)inner["items"]!)
                 {
                     var kv = (JsonArray)pair!;
-                    dict.Items.Add(new(Build(kv[0], byId), Build(kv[1], byId)));
+                    dict.Items.Add(new(Build(kv[0], byId, depth), Build(kv[1], byId, depth)));
                 }
                 return dict;
             }
@@ -381,52 +431,52 @@ public static class PyJson
             {
                 var set = new PySet { Frozen = innerTag == "frozenset" };
                 byId[id] = set;
-                foreach (var item in (JsonArray)inner["items"]!) set.Items.Add(Build(item, byId));
+                foreach (var item in (JsonArray)inner["items"]!) set.Items.Add(Build(item, byId, depth));
                 return set;
             }
             case "tuple":
             {
                 var tuple = new PyTuple();
                 byId[id] = tuple;
-                foreach (var item in (JsonArray)inner["items"]!) tuple.Items.Add(Build(item, byId));
+                foreach (var item in (JsonArray)inner["items"]!) tuple.Items.Add(Build(item, byId, depth));
                 return tuple;
             }
             case "reduce":
             case "newobj":
             case "newobj_ex":
-                return BuildObject(inner, innerTag, id, byId);
+                return BuildObject(inner, innerTag, id, byId, depth);
             default:
             {
-                object? result = BuildTagged(inner, innerTag, byId);
+                object? result = BuildTagged(inner, innerTag, byId, depth);
                 if (result is not null) byId[id] = result;
                 return result;
             }
         }
     }
 
-    private static PyObject BuildObject(JsonObject obj, string kind, int? sharedId, Dictionary<int, object> byId)
+    private static PyObject BuildObject(JsonObject obj, string kind, int? sharedId, Dictionary<int, object> byId, DepthGuard depth)
     {
         var py = new PyObject { Kind = kind };
         if (sharedId is int id) byId[id] = py;
-        py.Callable = Build(obj["callable"], byId);
+        py.Callable = Build(obj["callable"], byId, depth);
         var args = new PyTuple();
-        foreach (var a in (JsonArray)obj["args"]!) args.Items.Add(Build(a, byId));
+        foreach (var a in (JsonArray)obj["args"]!) args.Items.Add(Build(a, byId, depth));
         py.Args = args;
-        if (kind == "newobj_ex") py.KwArgs = Build(obj["kwargs"], byId);
+        if (kind == "newobj_ex") py.KwArgs = Build(obj["kwargs"], byId, depth);
         if (obj.ContainsKey("appends"))
         {
-            py.Appends = Build(obj["appends"], byId) as PyList
+            py.Appends = Build(obj["appends"], byId, depth) as PyList
                 ?? throw new SaveFormatException("'appends' bir dizi olmalı.");
         }
         if (obj.ContainsKey("setitems"))
         {
-            py.SetItems = Build(obj["setitems"], byId) as PyDict
+            py.SetItems = Build(obj["setitems"], byId, depth) as PyDict
                 ?? throw new SaveFormatException("'setitems' bir nesne olmalı.");
         }
         if (obj.ContainsKey("state"))
         {
             py.HasState = true;
-            py.State = Build(obj["state"], byId);
+            py.State = Build(obj["state"], byId, depth);
         }
         return py;
     }

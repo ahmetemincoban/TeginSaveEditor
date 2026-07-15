@@ -308,6 +308,105 @@ public class PickleTests
         Assert.Equal(1.0, ((PyDict)back!).Items[0].Value);
         Assert.IsType<double>(((PyDict)back).Items[0].Value);
     }
+
+    [Fact]
+    public void LargeLong_TaggedInJson_SoBrowserRoundTripPreservesPrecision()
+    {
+        // 2^53 + 1: the smallest positive integer a JS Number cannot represent exactly.
+        long value = 9_007_199_254_740_993L;
+        var dict = new PyDict();
+        dict.Items.Add(new("id", value));
+
+        byte[] pickled = new PickleWriter().Write(dict);
+        var jsonNode = PyJson.ToJson(PyJson.FromJson(PyJson.ToJson(new PickleReader(pickled).Read())));
+
+        // The value must be carried as a tagged string, not a bare JSON number,
+        // so a JS JSON.parse/stringify round trip cannot mangle it.
+        var tagged = Assert.IsType<System.Text.Json.Nodes.JsonObject>(jsonNode!["id"]);
+        Assert.Equal("long", tagged["py"]!.GetValue<string>());
+        Assert.Equal(value.ToString(), tagged["v"]!.GetValue<string>());
+
+        // Simulate the browser hop: serialize to JSON text and parse it back.
+        var reparsed = System.Text.Json.Nodes.JsonNode.Parse(jsonNode.ToJsonString());
+        object? back = PyJson.FromJson(reparsed);
+        byte[] rewritten = new PickleWriter().Write(back);
+        Assert.Equal(pickled, rewritten);
+    }
+
+    /// <summary>Hand-assembles a pickle stream for depth nested single-element
+    /// lists ([[[...[]...]]]) without going through PickleWriter (which now
+    /// refuses to emit graphs this deep), so PickleReader's iterative parser
+    /// can be exercised on genuinely deep input.</summary>
+    private static byte[] BuildDeepNestedListPickle(int depth)
+    {
+        using var ms = new MemoryStream();
+        ms.WriteByte(0x80); ms.WriteByte(2); // PROTO 2
+        ms.WriteByte((byte)']');             // EMPTY_LIST (innermost)
+        WriteLongBinPut(ms, 0);
+        for (int i = 1; i < depth; i++)
+        {
+            ms.WriteByte((byte)']');         // EMPTY_LIST (new outer)
+            WriteLongBinGet(ms, i - 1);       // push the previous list
+            ms.WriteByte((byte)'a');          // APPEND
+            WriteLongBinPut(ms, i);
+        }
+        ms.WriteByte((byte)'.');             // STOP
+        return ms.ToArray();
+
+        static void WriteLongBinPut(MemoryStream s, int id)
+        {
+            s.WriteByte((byte)'r');
+            s.Write(BitConverter.GetBytes((uint)id));
+        }
+        static void WriteLongBinGet(MemoryStream s, int id)
+        {
+            s.WriteByte((byte)'j');
+            s.Write(BitConverter.GetBytes((uint)id));
+        }
+    }
+
+    [Fact]
+    public void VeryDeepNesting_RaisesSaveFormatException_InsteadOfCrashingTheProcess()
+    {
+        const int depth = 100_000;
+
+        PyList deep = new();
+        PyList current = deep;
+        for (int i = 1; i < depth; i++)
+        {
+            var next = new PyList();
+            current.Items.Add(next);
+            current = next;
+        }
+
+        Assert.Throws<SaveFormatException>(() => PyJson.ToJson(deep));
+        Assert.Throws<SaveFormatException>(() => new PickleWriter().Write(deep));
+
+        // PickleReader is stack-based/iterative and isn't expected to guard
+        // depth itself; it must still parse deep input without crashing. The
+        // resulting deep graph then hits the same PyJson guard as above.
+        byte[] deepPickle = BuildDeepNestedListPickle(depth);
+        object? parsed = new PickleReader(deepPickle).Read();
+        Assert.IsType<PyList>(parsed);
+        Assert.Throws<SaveFormatException>(() => PyJson.ToJson(parsed));
+    }
+
+    [Fact]
+    public void VeryDeepJson_RaisesSaveFormatException_OnFromJson()
+    {
+        // Well past our own MaxDepth (2000) but comfortably short of the depth
+        // where System.Text.Json's own JsonNode plumbing (parent-chain Options
+        // lookup) would itself overflow the stack while building the tree.
+        var deep = new System.Text.Json.Nodes.JsonArray();
+        var current = deep;
+        for (int i = 1; i < 3000; i++)
+        {
+            var next = new System.Text.Json.Nodes.JsonArray();
+            current.Add(next);
+            current = next;
+        }
+        Assert.Throws<SaveFormatException>(() => PyJson.FromJson(deep));
+    }
 }
 
 public class GvasTests
@@ -369,6 +468,120 @@ public class GvasTests
         byte[] data = BuildSampleGvas();
         var doc = _detector.Detect(data, "Slot1.sav");
         Assert.Equal(data, _detector.Encode(doc));
+    }
+
+    [Fact]
+    public void Gvas_LargeInt64_SurvivesJsonRoundTrip_ByteIdentical()
+    {
+        var doc = new SaveDocument
+        {
+            FormatId = "gvas",
+            FormatName = "",
+            FileName = "x.sav",
+            Root = JsonNode.Parse($$"""
+            {
+              "header": {
+                "saveGameVersion": 2,
+                "packageVersionUE4": 522,
+                "engine": { "major": 4, "minor": 27, "patch": 2, "changelist": 0, "branch": "" },
+                "customVersionFormat": 3,
+                "customVersions": [],
+                "saveGameClassName": "/Script/MyGame.MySaveGame"
+              },
+              "properties": [
+                { "name": "Seed", "type": "Int64Property", "value": {{long.MaxValue}} },
+                { "name": "Mask", "type": "UInt64Property", "value": {{ulong.MaxValue}} },
+                { "name": "Small", "type": "Int64Property", "value": 42 }
+              ]
+            }
+            """)!.AsObject(),
+        };
+        byte[] data = new GvasFormat().Write(doc);
+
+        var doc2 = _detector.Detect(data, "x.sav");
+        var props = doc2.Root!["properties"]!.AsArray();
+        var seed = props.First(p => p!["name"]!.GetValue<string>() == "Seed")!;
+        var mask = props.First(p => p!["name"]!.GetValue<string>() == "Mask")!;
+        var small = props.First(p => p!["name"]!.GetValue<string>() == "Small")!;
+
+        // Values that would lose precision as a bare JS Number must be tagged strings.
+        Assert.Equal(long.MaxValue.ToString(), seed["value"]!.GetValue<string>());
+        Assert.Equal(ulong.MaxValue.ToString(), mask["value"]!.GetValue<string>());
+        // Small values stay plain numbers (no unnecessary tagging).
+        Assert.Equal(42L, small["value"]!.GetValue<long>());
+
+        // Simulate the browser hop: serialize to JSON text and parse it back.
+        var reparsed = JsonNode.Parse(doc2.Root.ToJsonString())!.AsObject();
+        var doc3 = new SaveDocument { FormatId = "gvas", FormatName = "", FileName = "x.sav", Root = reparsed };
+        byte[] output = new GvasFormat().Write(doc3);
+        Assert.Equal(data, output);
+    }
+
+    private static void WriteFString(BinaryWriter w, string s)
+    {
+        if (s.Length == 0) { w.Write(0); return; }
+        byte[] bytes = Encoding.UTF8.GetBytes(s);
+        w.Write(bytes.Length + 1);
+        w.Write(bytes);
+        w.Write((byte)0);
+    }
+
+    /// <summary>
+    /// A StructProperty whose declared size doesn't match what its (generic,
+    /// property-list) body actually contains: the body is a bare "None"
+    /// terminator (an empty struct) followed by 10 bytes of padding that are
+    /// still inside the declared size span. Parsing the property list itself
+    /// never throws - it just stops right after "None" - so this only shows
+    /// up as a byte-count mismatch, which is exactly what T2 guards against.
+    /// </summary>
+    private static byte[] BuildGvasWithMisalignedStruct()
+    {
+        using var ms = new MemoryStream();
+        var w = new BinaryWriter(ms);
+        w.Write("GVAS"u8);
+        w.Write(2);           // saveGameVersion
+        w.Write(0);           // packageVersionUE4
+        w.Write((ushort)4); w.Write((ushort)27); w.Write((ushort)2); w.Write((uint)0); // engine
+        WriteFString(w, "");  // engine.branch
+        w.Write(3);           // customVersionFormat
+        w.Write(0);           // customVersions count
+        WriteFString(w, "");  // saveGameClassName
+
+        WriteFString(w, "Broken");            // property name
+        WriteFString(w, "StructProperty");    // property type
+        byte[] noneBytes;
+        using (var nms = new MemoryStream())
+        {
+            WriteFString(new BinaryWriter(nms), "None");
+            noneBytes = nms.ToArray();
+        }
+        int padding = 10;
+        w.Write(noneBytes.Length + padding);  // declared size (too large for the body)
+        w.Write(0);                           // arrayIndex
+        WriteFString(w, "MyStruct");           // structType (unknown -> generic property list)
+        w.Write(new byte[16]);                 // structGuid
+        w.Write((byte)0);                      // guid flag
+        w.Write(noneBytes);                    // empty property list ("None")
+        w.Write(new byte[padding]);            // padding still inside the declared size
+
+        WriteFString(w, "None"); // terminate the top-level property list
+        w.Flush();
+        return ms.ToArray();
+    }
+
+    [Fact]
+    public void Gvas_MisalignedStruct_FallsBackToRaw_WithoutThrowing()
+    {
+        byte[] data = BuildGvasWithMisalignedStruct();
+        var doc = _detector.Detect(data, "broken.sav");
+        Assert.Equal("gvas", doc.FormatId);
+        Assert.Contains(doc.Warnings, w => w.Contains("ham"));
+
+        var prop = doc.Root!["properties"]!.AsArray().Single()!;
+        Assert.NotNull(prop["value"]!["__raw"]);
+
+        byte[] output = _detector.Encode(doc);
+        Assert.Equal(data, output);
     }
 }
 
@@ -448,5 +661,15 @@ public class SqliteTests
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             if (File.Exists(path)) File.Delete(path);
         }
+    }
+
+    [Fact]
+    public void Sqlite_ValidHeaderCorruptBody_ThrowsSaveFormatException()
+    {
+        // CanRead only looks at the 16-byte "SQLite format 3\0" header; a file
+        // that has the right header but a corrupt/truncated body (found by
+        // fuzzing) used to leak a raw Microsoft.Data.Sqlite.SqliteException.
+        byte[] data = [.. Encoding.UTF8.GetBytes("SQLite format 3\0"), .. new byte[64]];
+        Assert.Throws<SaveFormatException>(() => _detector.Detect(data, "broken.db"));
     }
 }

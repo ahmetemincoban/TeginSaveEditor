@@ -88,6 +88,12 @@ public sealed class SqliteFormat : ISaveFormat
             doc.Warnings.AddRange(warnings);
             return doc;
         }
+        catch (SqliteException ex)
+        {
+            // CanRead only checks the 16-byte header; the body can still be
+            // corrupt (truncated, overwritten, not actually a database).
+            throw new SaveFormatException($"SQLite dosyası okunamadı: {ex.Message}", ex);
+        }
         finally
         {
             SqliteConnection.ClearAllPools();

@@ -22,4 +22,8 @@
     <ProjectReference Include="..\..\src\SaveEditor.Core\SaveEditor.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="Scripts\pickle_compare.py" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
