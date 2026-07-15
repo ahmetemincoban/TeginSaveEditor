@@ -21,6 +21,8 @@ public sealed class FormatDetector
             new Es3Format(),
             new SqliteFormat(),
             new GvasFormat(),
+            new RubyMarshalFormat(),
+            new NbtFormat(),
             new JsonFormat(),
             new XmlFormat(),
             new IniFormat(),
