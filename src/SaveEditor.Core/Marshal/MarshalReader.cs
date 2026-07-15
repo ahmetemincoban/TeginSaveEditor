@@ -25,7 +25,21 @@ public sealed class MarshalReader(byte[] data)
         return ReadValue();
     }
 
-    private object? ReadValue()
+    private object? ReadValue() => ReadValue(register: true);
+
+    /// <summary>Reads a value that shares its caller's already-claimed link
+    /// slot instead of getting its own. Used for the wrapped content of
+    /// 'e'/'C' (Extended/UserClass): unlike 'U' (UserMarshal), where
+    /// marshal_dump returns a genuinely independent object, the wrapped
+    /// value there IS the same underlying Ruby object as the wrapper — e.g.
+    /// for `class MyArr &lt; Array; end`, the "wrapped array" isn't a second
+    /// object, it's `self` read as an Array. Registering it separately
+    /// consumes a link-table slot real Ruby never allocates, which
+    /// desyncs every subsequent '@' back-reference in the file. Verified
+    /// against real Marshal.dump output (see MarshalTests.cs).</summary>
+    private object? ReadValueInline() => ReadValue(register: false);
+
+    private object? ReadValue(bool register)
     {
         if (++_depth > MaxDepth)
         {
@@ -34,7 +48,7 @@ public sealed class MarshalReader(byte[] data)
         }
         try
         {
-            return ReadValueCore();
+            return ReadValueCore(register);
         }
         finally
         {
@@ -42,7 +56,7 @@ public sealed class MarshalReader(byte[] data)
         }
     }
 
-    private object? ReadValueCore()
+    private object? ReadValueCore(bool register)
     {
         byte tag = NextByte();
         switch (tag)
@@ -64,13 +78,13 @@ public sealed class MarshalReader(byte[] data)
                 object boxed;
                 if (big >= long.MinValue && big <= long.MaxValue) boxed = (long)big;
                 else boxed = big;
-                Register(boxed);
+                if (register) Register(boxed);
                 return boxed;
             }
             case (byte)'f':
             {
                 object boxed = ReadRubyFloat(ReadByteString());
-                Register(boxed);
+                if (register) Register(boxed);
                 return boxed;
             }
 
@@ -82,14 +96,14 @@ public sealed class MarshalReader(byte[] data)
             case (byte)'"':
             {
                 var s = new RbString { Bytes = ReadByteString() };
-                Register(s);
+                if (register) Register(s);
                 return s;
             }
 
             case (byte)'[':
             {
                 var arr = new RbArray();
-                Register(arr);
+                if (register) Register(arr);
                 long count = ReadLong();
                 for (long i = 0; i < count; i++) arr.Items.Add(ReadValue());
                 return arr;
@@ -99,7 +113,7 @@ public sealed class MarshalReader(byte[] data)
             case (byte)'}':
             {
                 var hash = new RbHash();
-                Register(hash);
+                if (register) Register(hash);
                 long count = ReadLong();
                 for (long i = 0; i < count; i++)
                 {
@@ -118,7 +132,7 @@ public sealed class MarshalReader(byte[] data)
             case (byte)'o':
             {
                 var obj = new RbObject { ClassName = ReadSymbolRef() };
-                Register(obj);
+                if (register) Register(obj);
                 long count = ReadLong();
                 for (long i = 0; i < count; i++)
                 {
@@ -131,7 +145,7 @@ public sealed class MarshalReader(byte[] data)
             case (byte)'S':
             {
                 var s = new RbStruct { ClassName = ReadSymbolRef() };
-                Register(s);
+                if (register) Register(s);
                 long count = ReadLong();
                 for (long i = 0; i < count; i++)
                 {
@@ -146,7 +160,7 @@ public sealed class MarshalReader(byte[] data)
             {
                 string name = Encoding.UTF8.GetString(ReadByteString());
                 var cm = new RbClassOrModule { Name = name, IsModule = tag == (byte)'m' };
-                Register(cm);
+                if (register) Register(cm);
                 return cm;
             }
 
@@ -154,8 +168,8 @@ public sealed class MarshalReader(byte[] data)
             {
                 var moduleName = ReadSymbolRef();
                 var ext = new RbExtended { ModuleName = moduleName };
-                Register(ext);
-                ext.Value = ReadValue();
+                if (register) Register(ext);
+                ext.Value = ReadValueInline();
                 return ext;
             }
 
@@ -163,16 +177,19 @@ public sealed class MarshalReader(byte[] data)
             {
                 var className = ReadSymbolRef();
                 var uc = new RbUserClass { ClassName = className };
-                Register(uc);
-                uc.Wrapped = ReadValue();
+                if (register) Register(uc);
+                uc.Wrapped = ReadValueInline();
                 return uc;
             }
 
             case (byte)'U':
             {
+                // Unlike 'e'/'C', the dumped value here (marshal_dump's
+                // return) is a genuinely independent Ruby object, so it gets
+                // its own slot — confirmed against real Marshal.dump output.
                 var className = ReadSymbolRef();
                 var um = new RbUserMarshal { ClassName = className };
-                Register(um);
+                if (register) Register(um);
                 um.Data = ReadValue();
                 return um;
             }
@@ -182,7 +199,7 @@ public sealed class MarshalReader(byte[] data)
                 var className = ReadSymbolRef();
                 byte[] blob = ReadByteString();
                 var ud = new RbUserDefined { ClassName = className, Data = blob };
-                Register(ud);
+                if (register) Register(ud);
                 return ud;
             }
 
@@ -191,7 +208,7 @@ public sealed class MarshalReader(byte[] data)
                 byte[] pattern = ReadByteString();
                 byte options = NextByte();
                 var re = new RbRegexp { Pattern = pattern, Options = options };
-                Register(re);
+                if (register) Register(re);
                 return re;
             }
 

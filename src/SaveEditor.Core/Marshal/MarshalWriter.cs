@@ -82,6 +82,42 @@ public sealed class MarshalWriter
     private void WriteBody(object value)
     {
         _objectMemo[value] = _objectMemo.Count;
+        WriteTagAndPayload(value);
+    }
+
+    /// <summary>Writes a value's tag and payload without claiming a link
+    /// slot for it. Used for the wrapped content of 'e'/'C' (Extended/
+    /// UserClass): unlike 'U' (UserMarshal), where marshal_dump returns a
+    /// genuinely independent object, the wrapped value there IS the same
+    /// underlying Ruby object as the wrapper — e.g. for
+    /// `class MyArr &lt; Array; end`, the "wrapped array" isn't a second
+    /// object, it's `self` read as an Array. Registering it separately
+    /// would consume a link-table slot real Ruby never allocates, which
+    /// desyncs every subsequent '@' back-reference in the file. Verified
+    /// against real Marshal.dump output (see MarshalTests.cs).</summary>
+    private void WriteInlineWrapped(object? value)
+    {
+        switch (value)
+        {
+            case null: Emit('0'); return;
+            case bool b: Emit(b ? 'T' : 'F'); return;
+            case long l:
+                if (FitsFixnumEncoding(l)) { Emit('i'); WriteLong(l); }
+                else WriteInlineWrapped(new BigInteger(l));
+                return;
+            case RbSymbol sym: WriteSymbolValue(sym); return;
+        }
+        if (_objectMemo.TryGetValue(value, out int id))
+        {
+            Emit('@');
+            WriteLong(id);
+            return;
+        }
+        WriteTagAndPayload(value);
+    }
+
+    private void WriteTagAndPayload(object value)
+    {
         switch (value)
         {
             case double d:
@@ -126,14 +162,17 @@ public sealed class MarshalWriter
             case RbExtended ext:
                 Emit('e');
                 WriteValue(ext.ModuleName);
-                WriteValue(ext.Value);
+                WriteInlineWrapped(ext.Value);
                 return;
             case RbUserClass uc:
                 Emit('C');
                 WriteValue(uc.ClassName);
-                WriteValue(uc.Wrapped);
+                WriteInlineWrapped(uc.Wrapped);
                 return;
             case RbUserMarshal um:
+                // Unlike 'e'/'C', the dumped value here (marshal_dump's
+                // return) is a genuinely independent Ruby object, so it gets
+                // its own slot — confirmed against real Marshal.dump output.
                 Emit('U');
                 WriteValue(um.ClassName);
                 WriteValue(um.Data);
@@ -199,22 +238,14 @@ public sealed class MarshalWriter
         _out.Write(buf[..len]);
     }
 
-    /// <summary>Whether x can be written by WriteLong's 4-byte-capped
-    /// encoding, i.e. must fit as a Fixnum rather than being promoted to
-    /// Bignum.</summary>
-    private static bool FitsFixnumEncoding(long x)
-    {
-        if (x == 0) return true;
-        if (x > 0 && x < 123) return true;
-        if (x < 0 && x > -124) return true;
-        long v = x;
-        for (int i = 0; i < 4; i++)
-        {
-            v >>= 8;
-            if (v == 0 || v == -1) return true;
-        }
-        return false;
-    }
+    /// <summary>Whether x must be written as a Fixnum ('i') rather than
+    /// promoted to Bignum ('l'). Real Ruby's rule (marshal.c) is the signed
+    /// int32 range, not merely "fits in 4 little-endian bytes": a value like
+    /// 3_000_000_000 fits in 4 bytes but exceeds int32.MaxValue, so Ruby
+    /// dumps it as Bignum — writing it as Fixnum would round-trip as a
+    /// negative number on any Ruby built with a 32-bit C `long` (still true
+    /// of Windows Ruby).</summary>
+    private static bool FitsFixnumEncoding(long x) => x >= int.MinValue && x <= int.MaxValue;
 
     private void WriteBignumBody(BigInteger big)
     {

@@ -150,7 +150,9 @@ internal sealed class NbtReader(byte[] data)
         int count = ReadInt32Raw();
         if (count < 0 || count > 64 * 1024 * 1024) throw Bad("Geçersiz int dizisi uzunluğu.");
         var items = new JsonArray();
-        for (int i = 0; i < count; i++) items.Add(ReadInt32Raw());
+        // JsonValue.Create(int), not JsonArray's generic Add<T>: see the
+        // comment on GvasFormat's ReadArrayBody for why.
+        for (int i = 0; i < count; i++) items.Add(JsonValue.Create(ReadInt32Raw()));
         return new JsonObject { ["nbt"] = "intarray", ["items"] = items };
     }
 

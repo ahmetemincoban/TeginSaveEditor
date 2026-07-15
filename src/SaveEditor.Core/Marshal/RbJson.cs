@@ -206,7 +206,11 @@ public static class RbJson
     private static JsonArray EmitPairs(List<KeyValuePair<RbSymbol, object?>> pairs, Dictionary<object, int> counts, Dictionary<object, int> ids, ref int nextId, DepthGuard depth)
     {
         var arr = new JsonArray();
-        foreach (var kv in pairs) arr.Add(new JsonArray { kv.Key.Name, Emit(kv.Value, counts, ids, ref nextId, depth) });
+        // JsonValue.Create(string) explicitly, not JsonArray's generic Add<T>:
+        // the generic overload resolves through a reflection-based JsonTypeInfo
+        // lookup that throws under JsonSerializerIsReflectionEnabledByDefault=false
+        // (confirmed to actually happen with .NET 10's file-based app runner).
+        foreach (var kv in pairs) arr.Add(new JsonArray { JsonValue.Create(kv.Key.Name), Emit(kv.Value, counts, ids, ref nextId, depth) });
         return arr;
     }
 

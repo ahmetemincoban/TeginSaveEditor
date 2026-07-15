@@ -255,19 +255,24 @@ internal sealed class GvasReader(byte[] data)
 
         switch (innerType)
         {
-            case "IntProperty": for (int i = 0; i < count; i++) items.Add(_r.ReadInt32()); break;
+            // JsonValue.Create(x) explicitly wherever x isn't already a
+            // JsonNode: JsonArray's generic Add<T> resolves through a
+            // reflection-based JsonTypeInfo lookup that throws under
+            // JsonSerializerIsReflectionEnabledByDefault=false (confirmed to
+            // actually happen with .NET 10's file-based app runner).
+            case "IntProperty": for (int i = 0; i < count; i++) items.Add(JsonValue.Create(_r.ReadInt32())); break;
             case "Int64Property": for (int i = 0; i < count; i++) items.Add(GvasInt.ToNode(_r.ReadInt64())); break;
-            case "UInt32Property": for (int i = 0; i < count; i++) items.Add(_r.ReadUInt32()); break;
+            case "UInt32Property": for (int i = 0; i < count; i++) items.Add(JsonValue.Create(_r.ReadUInt32())); break;
             case "FloatProperty": for (int i = 0; i < count; i++) items.Add(GvasFloat.ToNode(_r.ReadSingle())); break;
             case "DoubleProperty": for (int i = 0; i < count; i++) items.Add(GvasFloat.ToNode(_r.ReadDouble())); break;
-            case "ByteProperty": for (int i = 0; i < count; i++) items.Add(_r.ReadByte()); break;
-            case "BoolProperty": for (int i = 0; i < count; i++) items.Add(_r.ReadByte() != 0); break;
+            case "ByteProperty": for (int i = 0; i < count; i++) items.Add(JsonValue.Create(_r.ReadByte())); break;
+            case "BoolProperty": for (int i = 0; i < count; i++) items.Add(JsonValue.Create(_r.ReadByte() != 0)); break;
             case "StrProperty":
             case "NameProperty":
             case "EnumProperty":
             case "SoftObjectProperty":
             case "ObjectProperty":
-                for (int i = 0; i < count; i++) items.Add(ReadFString());
+                for (int i = 0; i < count; i++) items.Add(JsonValue.Create(ReadFString()));
                 break;
 
             case "StructProperty":

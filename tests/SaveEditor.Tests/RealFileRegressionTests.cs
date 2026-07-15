@@ -8,7 +8,8 @@ namespace SaveEditor.Tests;
 /// <summary>
 /// Regressions against real, non-synthetic save files. These are best-effort:
 /// if the fixture (a locally dropped save, or a file that needs downloading)
-/// isn't available, the test passes trivially instead of failing the build.
+/// isn't available, the test reports as Skipped (not Passed) so a run where
+/// none of these actually verified anything is visible in the test output.
 /// </summary>
 public class RealFileRegressionTests
 {
@@ -23,14 +24,14 @@ public class RealFileRegressionTests
         return null;
     }
 
-    [Fact]
+    [SkippableFact]
     public void MinecraftLevelDat_ByteIdentical_AfterRoundTrip()
     {
         string? root = FindRepoRoot();
         string? levelDatPath = root is null ? null : Path.Combine(root, ".claude", "level.dat");
-        if (levelDatPath is null || !File.Exists(levelDatPath)) return; // fixture not present locally; skip
+        Skip.If(levelDatPath is null || !File.Exists(levelDatPath), "gerçek level.dat fikstürü (.claude/level.dat) bulunamadı");
 
-        byte[] data = File.ReadAllBytes(levelDatPath);
+        byte[] data = File.ReadAllBytes(levelDatPath!);
         var detector = new FormatDetector();
         var doc = detector.Detect(data, "level.dat");
         Assert.Equal("nbt", doc.FormatId);
@@ -48,14 +49,14 @@ public class RealFileRegressionTests
         Assert.Equal(originalNbt, rewrittenNbt);
     }
 
-    [Fact]
+    [SkippableFact]
     public void RenpySave_StructurallyMatchesCPythonPickle_AfterRoundTrip()
     {
         string? root = FindRepoRoot();
         string? savePath = root is null ? null : Path.Combine(root, "1-5-LT1.save");
-        if (savePath is null || !File.Exists(savePath)) return; // fixture not present locally; skip
+        Skip.If(savePath is null || !File.Exists(savePath), "gerçek Ren'Py kaydı (1-5-LT1.save) depo kökünde bulunamadı");
 
-        byte[] data = File.ReadAllBytes(savePath);
+        byte[] data = File.ReadAllBytes(savePath!);
         byte[] origLog = ExtractZipEntry(data, "log");
 
         var detector = new FormatDetector();
@@ -74,10 +75,10 @@ public class RealFileRegressionTests
             File.WriteAllBytes(newPath, newLog);
 
             string script = Path.Combine(AppContext.BaseDirectory, "Scripts", "pickle_compare.py");
-            if (!File.Exists(script)) return; // script not deployed; skip
+            Skip.If(!File.Exists(script), "pickle_compare.py çıktı dizinine kopyalanmamış");
 
             var (exitCode, stdout) = RunPython(script, origPath, newPath);
-            if (exitCode is null) return; // python not available locally; skip
+            Skip.If(exitCode is null, "python yerelde bulunamadı");
             Assert.True(exitCode == 0, $"pickle_compare.py reported a mismatch:\n{stdout}");
         }
         finally
@@ -86,16 +87,16 @@ public class RealFileRegressionTests
         }
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData("https://raw.githubusercontent.com/trumank/uesave-rs/HEAD/uesave/drg-save-test.sav")]
     [InlineData("https://raw.githubusercontent.com/trumank/uesave-rs/HEAD/uesave/examples/space-rig-decorator/PropPack.sav")]
     public async Task GvasFile_ByteIdentical_AfterRoundTrip(string url)
     {
         byte[]? data = await TryDownload(url);
-        if (data is null) return; // no network access locally; skip
+        Skip.If(data is null, "GVAS fikstürü indirilemedi (ağ erişimi olmayabilir)");
 
         var detector = new FormatDetector();
-        var doc = detector.Detect(data, Path.GetFileName(url));
+        var doc = detector.Detect(data!, Path.GetFileName(url));
         Assert.Equal("gvas", doc.FormatId);
         byte[] output = detector.Encode(doc);
         Assert.Equal(data, output);

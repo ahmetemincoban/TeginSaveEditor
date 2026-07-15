@@ -61,12 +61,47 @@ public class MarshalReaderWriterTests
     [Fact]
     public void LargeFixnum_PromotesToBignum_AndNormalizesBackOnRead()
     {
-        // Outside the 4-byte Fixnum length-prefix range.
+        // Outside the signed int32 range, so real Ruby dumps it as Bignum.
         long huge = 5_000_000_000L;
         byte[] data = new MarshalWriter().Write(huge);
         object? back = new MarshalReader(data).Read();
         Assert.Equal(huge, back);
         Assert.IsType<long>(back);
+    }
+
+    [Fact]
+    public void FixnumBeyondInt32Range_PromotesToBignum_MatchingRealRubyBytes()
+    {
+        // Marshal.dump(3_000_000_000) in real CPython-adjacent CRuby:
+        // 3e9 fits in 4 little-endian bytes but exceeds int32.MaxValue, so
+        // Ruby dumps it as Bignum, not Fixnum (marshal.c: RSHIFT(v,31)==0||-1).
+        // A 32-bit-`long` Ruby build (still true of Windows Ruby) would read
+        // a naive 4-byte Fixnum encoding of this value back as negative.
+        byte[] expected = [0x04, 0x08, 0x6C, 0x2B, 0x07, 0x00, 0x5E, 0xD0, 0xB2];
+        byte[] actual = new MarshalWriter().Write(3_000_000_000L);
+        Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public void Int32BoundaryValues_StayFixnum_OneBeyondPromotesToBignum()
+    {
+        Assert.Equal((byte)'i', new MarshalWriter().Write((long)int.MaxValue)[2]);
+        Assert.Equal((byte)'i', new MarshalWriter().Write((long)int.MinValue)[2]);
+        Assert.Equal((byte)'l', new MarshalWriter().Write((long)int.MaxValue + 1)[2]);
+        Assert.Equal((byte)'l', new MarshalWriter().Write((long)int.MinValue - 1)[2]);
+    }
+
+    [Fact]
+    public void FixnumBeyondInt32Range_ReadsBackAndRoundTripsThroughJson()
+    {
+        byte[] realRubyBytes = [0x04, 0x08, 0x6C, 0x2B, 0x07, 0x00, 0x5E, 0xD0, 0xB2];
+        object? value = new MarshalReader(realRubyBytes).Read();
+        Assert.Equal(3_000_000_000L, value);
+
+        var json = RbJson.ToJson(value);
+        object? back = RbJson.FromJson(json);
+        byte[] rewritten = new MarshalWriter().Write(back);
+        Assert.Equal(realRubyBytes, rewritten);
     }
 
     [Fact]
@@ -170,6 +205,171 @@ public class MarshalReaderWriterTests
     {
         byte[] data = [0x04, 0x08, (byte)'[', 0x06]; // Array header claiming 1 element, then EOF
         Assert.Throws<SaveFormatException>(() => new MarshalReader(data).Read());
+    }
+
+    // Real Marshal.dump([a, a]) output for each wrapper kind, where `a` is
+    // shared (referenced twice via the same array). The trailing '@' opcode
+    // only resolves to the correct object if the link table numbering
+    // matches real Ruby's: 'C' and 'e' share one slot between the wrapper
+    // and its wrapped content (it's the same underlying Ruby object); 'U'
+    // gets two slots (marshal_dump returns a genuinely separate object).
+    // Before the V2 fix, the reader over-registered 'C'/'e' content into an
+    // extra slot, so this '@' resolved to the wrong object.
+
+    // class MyArr < Array; end; a = MyArr.new; a << 1 << 2; Marshal.dump([a, a])
+    private static readonly byte[] UserClassSharedTwiceBytes =
+        [0x04, 0x08, 0x5b, 0x07, 0x43, 0x3a, 0x0a, 0x4d, 0x79, 0x41, 0x72, 0x72, 0x5b, 0x07, 0x69, 0x06, 0x69, 0x07, 0x40, 0x06];
+
+    // class MyU; def initialize(v); @v=v; end; def marshal_dump; @v; end; def marshal_load(v); @v=v; end; end
+    // u = MyU.new("hello"); Marshal.dump([u, u])
+    private static readonly byte[] UserMarshalSharedTwiceBytes =
+        [0x04, 0x08, 0x5b, 0x07, 0x55, 0x3a, 0x08, 0x4d, 0x79, 0x55, 0x49, 0x22, 0x0a, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x06, 0x3a, 0x06, 0x45, 0x54, 0x40, 0x06];
+
+    // module Ext; def foo; end; end; obj = Object.new; obj.extend(Ext); Marshal.dump([obj, obj])
+    private static readonly byte[] ExtendedSharedTwiceBytes =
+        [0x04, 0x08, 0x5b, 0x07, 0x65, 0x3a, 0x08, 0x45, 0x78, 0x74, 0x6f, 0x3a, 0x0b, 0x4f, 0x62, 0x6a, 0x65, 0x63, 0x74, 0x00, 0x40, 0x06];
+
+    [Fact]
+    public void KnownBytes_UserClassSharedTwice_ResolvesSameObject()
+    {
+        var arr = (RbArray)new MarshalReader(UserClassSharedTwiceBytes).Read()!;
+        Assert.Same(arr.Items[0], arr.Items[1]);
+        Assert.IsType<RbUserClass>(arr.Items[0]);
+    }
+
+    [Fact]
+    public void KnownBytes_UserMarshalSharedTwice_ResolvesSameObject()
+    {
+        var arr = (RbArray)new MarshalReader(UserMarshalSharedTwiceBytes).Read()!;
+        Assert.Same(arr.Items[0], arr.Items[1]);
+        Assert.IsType<RbUserMarshal>(arr.Items[0]);
+    }
+
+    [Fact]
+    public void KnownBytes_ExtendedSharedTwice_ResolvesSameObject()
+    {
+        var arr = (RbArray)new MarshalReader(ExtendedSharedTwiceBytes).Read()!;
+        Assert.Same(arr.Items[0], arr.Items[1]);
+        Assert.IsType<RbExtended>(arr.Items[0]);
+    }
+
+    [Theory]
+    [InlineData("KnownBytes_UserClassSharedTwice_ResolvesSameObject")]
+    [InlineData("KnownBytes_UserMarshalSharedTwice_ResolvesSameObject")]
+    [InlineData("KnownBytes_ExtendedSharedTwice_ResolvesSameObject")]
+    public void KnownBytes_AlsoRoundTripThroughOwnWriter(string caseName)
+    {
+        byte[] source = caseName switch
+        {
+            "KnownBytes_UserClassSharedTwice_ResolvesSameObject" => UserClassSharedTwiceBytes,
+            "KnownBytes_UserMarshalSharedTwice_ResolvesSameObject" => UserMarshalSharedTwiceBytes,
+            _ => ExtendedSharedTwiceBytes,
+        };
+        object? model = new MarshalReader(source).Read();
+        byte[] rewritten = new MarshalWriter().Write(model);
+        var reread = (RbArray)new MarshalReader(rewritten).Read()!;
+        Assert.Same(reread.Items[0], reread.Items[1]);
+    }
+
+    public static IEnumerable<object[]> WriterModelFactories()
+    {
+        yield return
+        [
+            "usermarshal",
+            () =>
+            {
+                var um = new RbUserMarshal { ClassName = new RbSymbol("MyU"), Data = new RbArray { Items = [9L, 9L] } };
+                return (object)new RbArray { Items = [um, um] };
+            },
+        ];
+        yield return
+        [
+            "extended",
+            () =>
+            {
+                var ext = new RbExtended { ModuleName = new RbSymbol("Ext"), Value = new RbObject { ClassName = new RbSymbol("Object") } };
+                return (object)new RbArray { Items = [ext, ext] };
+            },
+        ];
+        yield return
+        [
+            "userclass",
+            () =>
+            {
+                var uc = new RbUserClass { ClassName = new RbSymbol("MyArr"), Wrapped = new RbArray { Items = [1L, 2L] } };
+                return (object)new RbArray { Items = [uc, uc] };
+            },
+        ];
+    }
+
+    [SkippableTheory]
+    [MemberData(nameof(WriterModelFactories))]
+    public void Writer_SharedWrappedValue_LoadsCorrectlyInRealRuby(string _, Func<object> buildModel)
+    {
+        string? rubyExe = FindRuby();
+        Skip.If(rubyExe is null, "ruby yerelde bulunamadı");
+
+        byte[] data = new MarshalWriter().Write(buildModel());
+        string tmp = Path.Combine(Path.GetTempPath(), "se-marshal-" + Guid.NewGuid().ToString("N") + ".bin");
+        File.WriteAllBytes(tmp, data);
+        try
+        {
+            string script = Path.Combine(AppContext.BaseDirectory, "Scripts", "marshal_link_check.rb");
+            Skip.If(!File.Exists(script), "marshal_link_check.rb çıktı dizinine kopyalanmamış");
+
+            var psi = new System.Diagnostics.ProcessStartInfo(rubyExe, $"\"{script}\" \"{tmp}\"")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            using var proc = System.Diagnostics.Process.Start(psi)!;
+            string stdout = proc.StandardOutput.ReadToEnd();
+            string stderr = proc.StandardError.ReadToEnd();
+            proc.WaitForExit();
+            Assert.True(proc.ExitCode == 0, $"ruby marshal_link_check.rb reported failure:\n{stdout}\n{stderr}");
+        }
+        finally
+        {
+            File.Delete(tmp);
+        }
+    }
+
+    private static string? FindRuby()
+    {
+        // Bare "ruby" first (the normal case once PATH is refreshed); RubyInstaller's
+        // default install locations as a fallback, since a PATH change from an
+        // installer doesn't propagate to a shell that was already running.
+        var candidates = new List<string> { "ruby" };
+        try
+        {
+            foreach (var dir in Directory.EnumerateDirectories(@"C:\", "Ruby*-x64").OrderDescending())
+                candidates.Add(Path.Combine(dir, "bin", "ruby.exe"));
+        }
+        catch
+        {
+            // best-effort probing only
+        }
+        foreach (string candidate in candidates)
+        {
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo(candidate, "--version")
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                };
+                using var proc = System.Diagnostics.Process.Start(psi)!;
+                proc.WaitForExit();
+                if (proc.ExitCode == 0) return candidate;
+            }
+            catch
+            {
+                // try the next candidate
+            }
+        }
+        return null;
     }
 }
 
