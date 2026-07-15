@@ -45,6 +45,31 @@ public class DetectorTests
     }
 
     [Fact]
+    public void CompactJson_StaysCompact_AfterEdit()
+    {
+        byte[] data = Encoding.UTF8.GetBytes("{\"gold\":500,\"party\":[\"Ayşe\",\"Ali\"]}");
+        var doc = _detector.Detect(data, "save1.save");
+        doc.Root!["gold"] = 9999;
+        byte[] output = _detector.Encode(doc);
+        Assert.DoesNotContain((byte)'\n', output);
+    }
+
+    [Fact]
+    public void IndentedJson_StaysIndented_AfterEdit()
+    {
+        byte[] data = Encoding.UTF8.GetBytes("{\n  \"gold\": 500,\n  \"party\": [\n    \"Ayşe\",\n    \"Ali\"\n  ]\n}");
+        var doc = _detector.Detect(data, "save1.save");
+        doc.Root!["gold"] = 9999;
+        byte[] output = _detector.Encode(doc);
+        string outText = Encoding.UTF8.GetString(output);
+        Assert.Contains('\n', outText);
+        Assert.Contains("  \"gold\"", outText);
+
+        var doc2 = _detector.Detect(output, "save1.save");
+        Assert.Equal(9999, doc2.Root!["gold"]!.GetValue<int>());
+    }
+
+    [Fact]
     public void RpgMakerMv_LzString_RoundTrips()
     {
         string json = "{\"system\":{\"versionId\":42},\"actors\":{\"@a\":[null,{\"_hp\":100,\"_name\":\"Harold\"}]},\"gold\":{\"@c\":\"Game_Gold\",\"_value\":777}}";
@@ -97,12 +122,61 @@ public class DetectorTests
     }
 
     [Fact]
+    public void LineWrappedBase64Json_DetectsAndRoundTrips()
+    {
+        string json = "{\"party\":[\"Ayşe\",\"Ali\",\"Deniz\"],\"gold\":250}";
+        string b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
+        // Classic RFC 2045 76-column wrapping.
+        var sb = new StringBuilder();
+        for (int i = 0; i < b64.Length; i += 76)
+        {
+            sb.Append(b64, i, Math.Min(76, b64.Length - i)).Append('\n');
+        }
+        byte[] data = Encoding.ASCII.GetBytes(sb.ToString());
+
+        var doc = _detector.Detect(data, "save.txt");
+        Assert.Equal("json", doc.FormatId);
+        Assert.Contains("base64", doc.Wrappers);
+        Assert.Equal(250, doc.Root!["gold"]!.GetValue<int>());
+
+        doc.Root["gold"] = 999;
+        var doc2 = _detector.Detect(_detector.Encode(doc), "save.txt");
+        Assert.Equal(999, doc2.Root!["gold"]!.GetValue<int>());
+    }
+
+    [Fact]
     public void PlainText_FallsBack()
     {
         var doc = _detector.Detect(Encoding.UTF8.GetBytes("merhaba dünya\nsatır 2"), "notes.txt");
         Assert.Equal("text", doc.FormatId);
         byte[] output = _detector.Encode(doc);
         Assert.Equal("merhaba dünya\nsatır 2", Encoding.UTF8.GetString(output));
+    }
+
+    [Fact]
+    public void Utf16LeXml_RoundTrips_ByteIdentical_WhenUnedited()
+    {
+        string xml = "<save><gold>250</gold><name>Ayşe</name></save>";
+        byte[] data = Encoding.Unicode.GetPreamble().Concat(Encoding.Unicode.GetBytes(xml)).ToArray();
+
+        var doc = _detector.Detect(data, "save.xml");
+        Assert.Equal("xml", doc.FormatId);
+        Assert.Equal(xml, doc.Root!.GetValue<string>());
+
+        // Unedited: writing it back must reproduce the exact UTF-16LE + BOM bytes.
+        Assert.Equal(data, _detector.Encode(doc));
+    }
+
+    [Fact]
+    public void Utf16BeText_RoundTrips_SameEncoding()
+    {
+        string text = "seviye=5\ncan=100";
+        byte[] data = Encoding.BigEndianUnicode.GetPreamble().Concat(Encoding.BigEndianUnicode.GetBytes(text)).ToArray();
+
+        var doc = _detector.Detect(data, "notes.txt");
+        Assert.Equal("text", doc.FormatId);
+        Assert.Equal(text, doc.Root!.GetValue<string>());
+        Assert.Equal(data, _detector.Encode(doc));
     }
 
     [Fact]
@@ -124,6 +198,26 @@ public class DetectorTests
         doc.Root["player"]!["gold"] = "5000";
         var doc2 = _detector.Detect(_detector.Encode(doc), "config.ini");
         Assert.Equal("5000", doc2.Root!["player"]!["gold"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void Ini_DuplicateKeyInSection_FallsBackToPlainText_NoDataLoss()
+    {
+        byte[] data = Encoding.UTF8.GetBytes("[player]\ngold=100\ngold=200\n");
+        var doc = _detector.Detect(data, "config.ini");
+        Assert.Equal("ini", doc.FormatId);
+        Assert.Contains(doc.Warnings, w => w.Contains("Yinelenen"));
+        Assert.Equal(data, _detector.Encode(doc));
+    }
+
+    [Fact]
+    public void Ini_DuplicateSectionName_FallsBackToPlainText_NoDataLoss()
+    {
+        byte[] data = Encoding.UTF8.GetBytes("[player]\ngold=100\n\n[player]\nname=Ali\n");
+        var doc = _detector.Detect(data, "config.ini");
+        Assert.Equal("ini", doc.FormatId);
+        Assert.Contains(doc.Warnings, w => w.Contains("Yinelenen"));
+        Assert.Equal(data, _detector.Encode(doc));
     }
 }
 
@@ -163,10 +257,35 @@ public class Es3Tests
         var doc2 = _detector.Detect(_detector.Encode(doc), "s.es3");
         Assert.Equal(777, doc2.Root!["coins"]!["value"]!.GetValue<int>());
     }
+
+    [Fact]
+    public void UnsupportedBinaryEs3_ErrorMentionsBothBinaryAndPassword()
+    {
+        // Not JSON, not gzip, and random bytes essentially never decrypt to
+        // valid JSON under any candidate password: this is ES3's actual
+        // (unsupported) binary serializer, not a wrong-password case.
+        byte[] data = new byte[64];
+        new Random(42).NextBytes(data);
+
+        var ex = Assert.Throws<SaveFormatException>(() => _detector.Detect(data, "SaveFile.es3"));
+        Assert.Contains("ikili", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("şifre", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
 }
 
 public class PickleTests
 {
+    [Fact]
+    public void InvalidBinget_ReportsMemoErrorWithPosition()
+    {
+        // PROTO 2, BINGET id=0 (never PUT), STOP.
+        byte[] data = [0x80, 0x02, (byte)'h', 0x00, (byte)'.'];
+        var ex = Assert.Throws<SaveFormatException>(() => new PickleReader(data).Read());
+        Assert.Contains("memo", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("opcode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("konum", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void Primitives_RoundTrip()
     {

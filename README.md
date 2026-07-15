@@ -58,7 +58,8 @@ Her format `Read` ile düzenlenebilir bir JSON ağacına açılır ve `Write` il
 
 ## Bilinen sınırlamalar
 
-- 2^53'ten büyük tamsayılar tarayıcı JSON'unda hassasiyet kaybedebilir (Ham JSON modunda dokunulmayan değerler sunucu tarafında etkilenmez... ağaçta düzenlenen düğümler için geçerlidir).
+- GVAS `Int64Property`/`UInt64Property` ve pickle'daki Python `int` değerleri 2^53'ten büyük olsa da etiketlenerek (string olarak) taşınır ve tarayıcı JSON'unda hassasiyet kaybetmez. Düz JSON/XML/INI gibi salt metin formatlarında böyle bir etiketleme yoktur: 2^53'ten büyük tamsayılar içeren düğümler tarayıcıda düzenlenirse hassasiyet kaybedebilir.
+- Düz JSON formatında `-0.0` ve `NaN`/`Infinity` gibi özel float değerleri JSON'un kendi sınırı gereği kayıpsız taşınmaz (bu formatta bilinçli olarak düzeltilmedi). GVAS ve pickle'da bu değerler ayrıca etiketlenerek kayıpsız korunur.
 - GVAS `MapProperty` / `TextProperty` salt-ham (base64) taşınır, alan alan düzenlenemez.
 - RPG Maker VX Ace (`.rvdata2`, Ruby Marshal) ve Flash `.sol` (AMF) henüz desteklenmiyor.
 - INI dosyalarında yorum satırları kaydederken korunmaz.

@@ -131,18 +131,26 @@ public sealed class Base64Wrapper : IWrapper
     internal static bool LooksLikeBase64(byte[] data, out string? text)
     {
         text = null;
-        int len = data.Length;
-        // Allow trailing whitespace/newline
-        while (len > 0 && (data[len - 1] is (byte)'\n' or (byte)'\r' or (byte)' ' or (byte)'\t')) len--;
+        // Strip embedded line breaks (classic 76-column wrapped base64, e.g.
+        // RFC 2045) before validating; the rest must be pure base64 alphabet
+        // plus optional trailing whitespace.
+        var sb = new StringBuilder(data.Length);
+        foreach (byte b in data)
+        {
+            if (b is (byte)'\n' or (byte)'\r') continue;
+            sb.Append((char)b);
+        }
+        int len = sb.Length;
+        while (len > 0 && (sb[len - 1] is ' ' or '\t')) len--;
         if (len < 4) return false;
         for (int i = 0; i < len; i++)
         {
-            byte b = data[i];
-            bool ok = b is (>= (byte)'A' and <= (byte)'Z') or (>= (byte)'a' and <= (byte)'z')
-                or (>= (byte)'0' and <= (byte)'9') or (byte)'+' or (byte)'/' or (byte)'=';
+            char c = sb[i];
+            bool ok = c is (>= 'A' and <= 'Z') or (>= 'a' and <= 'z')
+                or (>= '0' and <= '9') or '+' or '/' or '=';
             if (!ok) return false;
         }
-        text = Encoding.ASCII.GetString(data, 0, len);
+        text = sb.ToString(0, len);
         return true;
     }
 

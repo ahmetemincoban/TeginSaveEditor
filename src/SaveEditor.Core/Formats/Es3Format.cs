@@ -47,7 +47,8 @@ public sealed class Es3Format : ISaveFormat
         if (json is null)
         {
             throw new SaveFormatException(
-                "Bu .es3 dosyası şifreli görünüyor ve şifre çözülemedi. Doğru şifreyi girip tekrar deneyin.");
+                "Bu .es3 dosyası JSON olarak çözümlenemedi. Şifreli olabilir (doğru şifreyi girip tekrar deneyin) " +
+                "veya ES3'ün desteklenmeyen bir ikili (binary) serileştirme formatını kullanıyor olabilir.");
         }
 
         var root = JsonNode.Parse(json, documentOptions: new JsonDocumentOptions

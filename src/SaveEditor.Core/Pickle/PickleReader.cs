@@ -166,9 +166,9 @@ public sealed class PickleReader(byte[] data)
                 case (byte)'q': _memo[NextByte()] = Peek(); break;                    // BINPUT
                 case (byte)'r': _memo[ReadUInt32()] = Peek(); break;                  // LONG_BINPUT
                 case 0x94: _memo[_memo.Count] = Peek(); break;                        // MEMOIZE
-                case (byte)'g': Push(_memo[long.Parse(ReadLine(), CultureInfo.InvariantCulture)]); break; // GET
-                case (byte)'h': Push(_memo[NextByte()]); break;                       // BINGET
-                case (byte)'j': Push(_memo[ReadUInt32()]); break;                     // LONG_BINGET
+                case (byte)'g': Push(MemoGet(long.Parse(ReadLine(), CultureInfo.InvariantCulture))); break; // GET
+                case (byte)'h': Push(MemoGet(NextByte())); break;                     // BINGET
+                case (byte)'j': Push(MemoGet(ReadUInt32())); break;                   // LONG_BINGET
 
                 case (byte)'c': Push(new PyGlobal { Module = ReadLine(), Name = ReadLine() }); break; // GLOBAL
                 case 0x93:                                            // STACK_GLOBAL
@@ -343,6 +343,13 @@ public sealed class PickleReader(byte[] data)
         null => new PyTuple(),
         _ => new PyTuple { Items = [v] },
     };
+
+    private object? MemoGet(long id)
+    {
+        if (!_memo.TryGetValue(id, out object? value))
+            throw Bad($"memo anahtarı bulunamadı: id={id}");
+        return value;
+    }
 
     private static SaveFormatException Bad(string message) => new($"Pickle çözümleme hatası: {message}");
 
