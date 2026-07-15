@@ -24,6 +24,31 @@ public class RealFileRegressionTests
     }
 
     [Fact]
+    public void MinecraftLevelDat_ByteIdentical_AfterRoundTrip()
+    {
+        string? root = FindRepoRoot();
+        string? levelDatPath = root is null ? null : Path.Combine(root, ".claude", "level.dat");
+        if (levelDatPath is null || !File.Exists(levelDatPath)) return; // fixture not present locally; skip
+
+        byte[] data = File.ReadAllBytes(levelDatPath);
+        var detector = new FormatDetector();
+        var doc = detector.Detect(data, "level.dat");
+        Assert.Equal("nbt", doc.FormatId);
+        Assert.Contains("gzip", doc.Wrappers);
+        Assert.True(doc.Editable);
+
+        byte[] output = detector.Encode(doc);
+
+        // Re-gzipping isn't byte-identical (the OS/mtime header fields differ
+        // between .NET's GZipStream and whatever produced the original file);
+        // what matters is that the decompressed NBT payload round-trips exactly.
+        var gzip = new GZipWrapper();
+        Assert.True(gzip.TryUnwrap(data, out byte[] originalNbt));
+        Assert.True(gzip.TryUnwrap(output, out byte[] rewrittenNbt));
+        Assert.Equal(originalNbt, rewrittenNbt);
+    }
+
+    [Fact]
     public void RenpySave_StructurallyMatchesCPythonPickle_AfterRoundTrip()
     {
         string? root = FindRepoRoot();

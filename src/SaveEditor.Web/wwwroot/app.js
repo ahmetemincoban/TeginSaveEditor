@@ -7,9 +7,18 @@ const state = {
   editable: true,
   data: undefined,       // the editable root value
   rawMode: false,
+  dirty: false,           // unsaved edits since the last open/download
 };
 
 const $ = (sel) => document.querySelector(sel);
+
+function markDirty() { state.dirty = true; }
+
+window.addEventListener("beforeunload", (e) => {
+  if (!state.dirty) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
 
 // ---------- upload ----------
 const dropzone = $("#dropzone");
@@ -83,6 +92,7 @@ function openEditor(info) {
   state.editable = info.editable;
   state.data = info.root;
   state.rawMode = false;
+  state.dirty = false;
 
   $("#upload-screen").hidden = true;
   $("#editor-screen").hidden = false;
@@ -114,8 +124,9 @@ function openEditor(info) {
 }
 
 $("#btn-reset").addEventListener("click", () => {
-  if (!confirm("Kaydedilmemiş değişiklikler kaybolur. Kapatılsın mı?")) return;
+  if (state.dirty && !confirm("Kaydedilmemiş değişiklikler kaybolur. Kapatılsın mı?")) return;
   state.id = null;
+  state.dirty = false;
   $("#editor-screen").hidden = true;
   $("#upload-screen").hidden = false;
   fileInput.value = "";
@@ -143,6 +154,7 @@ $("#btn-download").addEventListener("click", async () => {
     a.download = state.fileName;
     a.click();
     URL.revokeObjectURL(a.href);
+    state.dirty = false;
   } finally {
     btn.disabled = false;
     btn.textContent = "⬇ İndir";
@@ -182,11 +194,13 @@ function applyRaw() {
   const text = $("#raw-text").value;
   if (typeof state.data === "string") {
     state.data = text;
+    markDirty();
     $("#raw-error").textContent = "";
     return true;
   }
   try {
     state.data = JSON.parse(text);
+    markDirty();
     $("#raw-error").textContent = "";
     return true;
   } catch (err) {
@@ -290,23 +304,43 @@ function buildNode(label, accessor, path, depth, parentApi) {
 
     function buildChildren() {
       const keys = entries();
-      const LIMIT = 2000;
-      keys.slice(0, LIMIT).forEach((k) => {
-        const childAccessor = {
-          get: () => value[k],
-          set: (v) => { value[k] = v; },
-        };
-        const childApi = buildNode(k, childAccessor, path.concat([k]), depth + 1, api);
-        api.childApis.set(String(k), childApi);
-        addRowActions(childApi, value, k, api);
-        childrenEl.appendChild(childApi.el);
-      });
-      if (keys.length > LIMIT) {
-        const more = document.createElement("div");
-        more.className = "sr-more";
-        more.textContent = "... " + (keys.length - LIMIT) + " öğe daha (performans için gizlendi; Ham JSON görünümünü kullanın)";
-        childrenEl.appendChild(more);
+      const BATCH = 2000;
+      let rendered = 0;
+      let moreBtn = null;
+
+      function renderBatch() {
+        const batch = keys.slice(rendered, rendered + BATCH);
+        batch.forEach((k) => {
+          const childAccessor = {
+            get: () => value[k],
+            set: (v) => { value[k] = v; },
+          };
+          const childApi = buildNode(k, childAccessor, path.concat([k]), depth + 1, api);
+          api.childApis.set(String(k), childApi);
+          addRowActions(childApi, value, k, api);
+          if (moreBtn) childrenEl.insertBefore(childApi.el, moreBtn);
+          else childrenEl.appendChild(childApi.el);
+        });
+        rendered += batch.length;
+
+        if (moreBtn) { moreBtn.remove(); moreBtn = null; }
+        if (rendered < keys.length) {
+          moreBtn = document.createElement("button");
+          moreBtn.type = "button";
+          moreBtn.className = "sr-more load-more";
+          moreBtn.textContent = "Daha fazla göster (" + (keys.length - rendered) + " öğe kaldı)";
+          moreBtn.addEventListener("click", renderBatch);
+          childrenEl.appendChild(moreBtn);
+        }
       }
+
+      renderBatch();
+      // Keeps loading batches until `key` has been rendered (or everything
+      // has), so revealPath() can jump straight to a search result that
+      // falls past the first batch.
+      api.loadMoreUntil = (key) => {
+        while (!api.childApis.has(String(key)) && rendered < keys.length) renderBatch();
+      };
     }
 
     expander.addEventListener("click", () => (api.expanded ? api.collapse() : api.expand()));
@@ -336,6 +370,7 @@ function buildNode(label, accessor, path, depth, parentApi) {
       let parsed;
       try { parsed = JSON.parse(raw); } catch { alert("Geçersiz JSON değeri."); return; }
       value[key] = parsed;
+      markDirty();
       api.expand();
       api.rebuild();
     });
@@ -368,6 +403,7 @@ function addRowActions(childApi, container, key, parentApi) {
     if (!confirm("Bu öğe silinsin mi?")) return;
     if (Array.isArray(container)) container.splice(key, 1);
     else delete container[key];
+    markDirty();
     parentApi.rebuild();
   });
   actions.appendChild(del);
@@ -377,7 +413,7 @@ function makeValueEl(accessor) {
   const span = document.createElement("span");
   const paint = () => {
     const v = accessor.get();
-    const type = v === null ? "null" : typeof v;
+    const type = valueTypeOf(v);
     span.className = "val " + type;
     span.textContent = v === null ? "null" : type === "string" ? JSON.stringify(v) : String(v);
     span.title = "Düzenlemek için tıkla";
@@ -386,17 +422,43 @@ function makeValueEl(accessor) {
 
   span.addEventListener("click", () => {
     const oldValue = accessor.get();
+    const initialType = valueTypeOf(oldValue);
+
+    const wrapper = document.createElement("span");
+    wrapper.className = "val-edit";
+
+    const typeSel = document.createElement("select");
+    typeSel.className = "val-type";
+    VALUE_TYPES.forEach(({ type, label }) => {
+      const opt = document.createElement("option");
+      opt.value = type;
+      opt.textContent = label;
+      typeSel.appendChild(opt);
+    });
+    typeSel.value = initialType;
+
     const input = document.createElement("input");
     input.className = "val-input";
-    input.value = oldValue === null ? "null" : typeof oldValue === "string" ? oldValue : String(oldValue);
-    span.replaceWith(input);
+    input.value = textForType(oldValue, initialType);
+
+    let done = false;
+    const syncInputForType = () => {
+      const type = typeSel.value;
+      input.disabled = type === "null";
+      if (type === "boolean" && input.value !== "true" && input.value !== "false") input.value = "true";
+      if (type === "null") input.value = "";
+      input.classList.remove("invalid");
+    };
+    typeSel.addEventListener("change", syncInputForType);
+
+    wrapper.append(typeSel, input);
+    span.replaceWith(wrapper);
     input.focus();
     input.select();
 
-    let done = false;
     const commit = () => {
       if (done) return;
-      const result = parseEdited(input.value, oldValue);
+      const result = parseByType(input.value, typeSel.value);
       if (!result.ok) {
         input.classList.add("invalid");
         input.title = result.error;
@@ -404,45 +466,33 @@ function makeValueEl(accessor) {
       }
       done = true;
       accessor.set(result.value);
+      markDirty();
       paint();
-      input.replaceWith(span);
+      wrapper.replaceWith(span);
     };
     const cancel = () => {
       if (done) return;
       done = true;
-      input.replaceWith(span);
+      wrapper.replaceWith(span);
     };
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") commit();
       else if (e.key === "Escape") cancel();
       else input.classList.remove("invalid");
     });
-    input.addEventListener("blur", () => { if (!done) commit(); if (!done) cancel(); });
+    input.addEventListener("blur", (e) => {
+      if (e.relatedTarget === typeSel) return; // switching type, not leaving the editor
+      if (!done) commit();
+      if (!done) cancel();
+    });
+    typeSel.addEventListener("blur", (e) => {
+      if (e.relatedTarget === input) return;
+      if (!done) commit();
+      if (!done) cancel();
+    });
   });
 
   return span;
-}
-
-function parseEdited(text, oldValue) {
-  const t = text.trim();
-  if (typeof oldValue === "number") {
-    if (t === "") return { ok: false, error: "Sayı girin" };
-    const n = Number(t);
-    if (!Number.isFinite(n)) return { ok: false, error: "Geçersiz sayı" };
-    return { ok: true, value: n };
-  }
-  if (typeof oldValue === "boolean") {
-    if (t === "true" || t === "1") return { ok: true, value: true };
-    if (t === "false" || t === "0") return { ok: true, value: false };
-    return { ok: false, error: "true veya false girin" };
-  }
-  if (oldValue === null) {
-    if (t === "null" || t === "") return { ok: true, value: null };
-    try { return { ok: true, value: JSON.parse(t) }; }
-    catch { return { ok: true, value: text }; }
-  }
-  // string: keep verbatim
-  return { ok: true, value: text };
 }
 
 // ---------- expand / collapse all ----------
@@ -468,12 +518,19 @@ searchInput.addEventListener("input", () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(runSearch, 300);
 });
+["filter-keys", "filter-values", "filter-exact"].forEach((id) => {
+  $("#" + id).addEventListener("change", runSearch);
+});
 
 function runSearch() {
   const q = searchInput.value.trim().toLowerCase();
   const panel = $("#search-results");
   panel.innerHTML = "";
   if (!q) { panel.hidden = true; return; }
+
+  const matchKeys = $("#filter-keys").checked;
+  const matchValues = $("#filter-values").checked;
+  const exact = $("#filter-exact").checked;
 
   const results = [];
   const LIMIT = 200;
@@ -484,11 +541,11 @@ function runSearch() {
       for (const k of keys) {
         if (results.length >= LIMIT) return;
         const child = value[k];
-        if (typeof k === "string" && k.toLowerCase().includes(q)) {
+        if (matchKeys && typeof k === "string" && matchesQuery(k.toLowerCase(), q, exact)) {
           results.push({ path: path.concat([k]), value: child });
-        } else if (!isContainer(child)) {
+        } else if (matchValues && !isContainer(child)) {
           const text = child === null ? "null" : String(child);
-          if (text.toLowerCase().includes(q)) results.push({ path: path.concat([k]), value: child });
+          if (matchesQuery(text.toLowerCase(), q, exact)) results.push({ path: path.concat([k]), value: child });
         }
         walk(child, path.concat([k]));
       }
@@ -531,6 +588,7 @@ function revealPath(path) {
   let api = rootApi;
   api.expand();
   for (const key of path) {
+    if (api.loadMoreUntil) api.loadMoreUntil(key);
     const child = api.childApis.get(String(key));
     if (!child) break;
     api = child;

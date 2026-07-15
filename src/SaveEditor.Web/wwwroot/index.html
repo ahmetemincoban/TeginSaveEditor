@@ -11,7 +11,7 @@
 <header>
   <h1>💾 Save Editor</h1>
   <p class="subtitle">Oyun kayıt dosyanı yükle, formatı otomatik algılansın, değerleri düzenle ve geri indir.</p>
-  <p class="formats">RPG Maker (.rpgsave, .rmmzsave) · Ren'Py (.save) · Unity (.es3) · Unreal (.sav GVAS) · Godot · SQLite · JSON · XML · INI · gzip/zlib/base64</p>
+  <p class="formats">RPG Maker (.rpgsave, .rmmzsave, .rxdata, .rvdata, .rvdata2) · Ren'Py (.save) · Unity (.es3) · Unreal (.sav GVAS) · Godot · SQLite · Minecraft (.dat) · JSON · XML · INI · gzip/zlib/base64</p>
 </header>
 
 <main>
@@ -54,6 +54,11 @@
 
     <div id="toolbar">
       <input type="search" id="search" placeholder="Anahtar veya değer ara (ör. gold, hp, para)...">
+      <span id="search-filters">
+        <label><input type="checkbox" id="filter-keys" checked> anahtar</label>
+        <label><input type="checkbox" id="filter-values" checked> değer</label>
+        <label><input type="checkbox" id="filter-exact"> tam eşleşme</label>
+      </span>
       <button id="btn-expand" class="ghost">＋ Genişlet</button>
       <button id="btn-collapse" class="ghost">－ Daralt</button>
     </div>
@@ -75,6 +80,7 @@
   <p>Tüm işlem yerel sunucunuzda yapılır; dosyalar hiçbir yere gönderilmez. Düzenlemeden önce kayıt dosyanızı yedekleyin!</p>
 </footer>
 
+<script src="pure.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

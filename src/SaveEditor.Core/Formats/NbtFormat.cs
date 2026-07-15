@@ -167,6 +167,7 @@ internal sealed class NbtReader(byte[] data)
 
     internal static string TagName(byte type) => type switch
     {
+        0 => "end", // conventional "no element type" marker for an empty list
         1 => "byte",
         2 => "short",
         3 => "int",
@@ -316,6 +317,7 @@ internal sealed class NbtWriter
 
     private static byte TypeId(string name) => name switch
     {
+        "end" => 0,
         "byte" => 1,
         "short" => 2,
         "int" => 3,
