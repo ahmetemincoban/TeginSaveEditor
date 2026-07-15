@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Save Editor — Oyun Kayıt Dosyası Düzenleyici</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💾</text></svg>">
+</head>
+<body>
+<header>
+  <h1>💾 Save Editor</h1>
+  <p class="subtitle">Oyun kayıt dosyanı yükle, formatı otomatik algılansın, değerleri düzenle ve geri indir.</p>
+  <p class="formats">RPG Maker (.rpgsave, .rmmzsave) · Ren'Py (.save) · Unity (.es3) · Unreal (.sav GVAS) · Godot · SQLite · JSON · XML · INI · gzip/zlib/base64</p>
+</header>
+
+<main>
+  <!-- Upload screen -->
+  <section id="upload-screen">
+    <div id="dropzone" tabindex="0">
+      <div class="dz-icon">📂</div>
+      <div class="dz-text">Dosyayı buraya sürükle<br><span>veya tıklayıp seç</span></div>
+      <input type="file" id="file-input" hidden>
+    </div>
+    <div class="upload-options">
+      <label class="pw-label">Şifre (gerekliyse, örn. şifreli .es3):
+        <input type="password" id="password" placeholder="varsayılan otomatik denenir" autocomplete="off">
+      </label>
+      <button id="paste-toggle" class="ghost">✂ Metin / kod yapıştır</button>
+    </div>
+    <div id="paste-area" hidden>
+      <textarea id="paste-text" placeholder="Base64, JSON veya kayıt metnini buraya yapıştırın..."></textarea>
+      <button id="paste-submit">Çözümle</button>
+    </div>
+    <div id="upload-error" class="error" hidden></div>
+  </section>
+
+  <!-- Editor screen -->
+  <section id="editor-screen" hidden>
+    <div id="file-info">
+      <div class="fi-left">
+        <span id="fi-name"></span>
+        <span id="fi-format" class="badge"></span>
+        <span id="fi-wrappers" class="badge subtle"></span>
+        <span id="fi-size" class="badge subtle"></span>
+      </div>
+      <div class="fi-right">
+        <button id="btn-view-toggle" class="ghost">{ } Ham JSON</button>
+        <button id="btn-download" class="primary">⬇ İndir</button>
+        <button id="btn-reset" class="ghost">✕ Kapat</button>
+      </div>
+    </div>
+    <div id="warnings"></div>
+
+    <div id="toolbar">
+      <input type="search" id="search" placeholder="Anahtar veya değer ara (ör. gold, hp, para)...">
+      <button id="btn-expand" class="ghost">＋ Genişlet</button>
+      <button id="btn-collapse" class="ghost">－ Daralt</button>
+    </div>
+    <div id="search-results" hidden></div>
+
+    <div id="tree" class="tree"></div>
+
+    <div id="raw-editor" hidden>
+      <textarea id="raw-text" spellcheck="false"></textarea>
+      <div class="raw-actions">
+        <button id="raw-apply" class="primary">Uygula</button>
+        <span id="raw-error" class="error"></span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <p>Tüm işlem yerel sunucunuzda yapılır; dosyalar hiçbir yere gönderilmez. Düzenlemeden önce kayıt dosyanızı yedekleyin!</p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

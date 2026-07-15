@@ -1,0 +1,21 @@
+# Build outputs
+bin/
+obj/
+publish/
+TestResults/
+
+# IDE
+.vs/
+.vscode/
+.claude/
+.idea/
+*.user
+
+# Local test artifacts (personal save files dropped into the repo root for testing)
+/*.save
+/*.sav
+/*.rpgsave
+/*.rmmzsave
+/*.es3
+/*.sqlite
+/*.db

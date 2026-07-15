@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SaveEditor.Core/SaveEditor.Core.csproj" />
+    <Project Path="src/SaveEditor.Web/SaveEditor.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SaveEditor.Tests/SaveEditor.Tests.csproj" />
+  </Folder>
+</Solution>
