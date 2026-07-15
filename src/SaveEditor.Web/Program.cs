@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http.Features;
 using SaveEditor.Core;
@@ -13,8 +14,11 @@ var app = builder.Build();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
+TempFileCleanup.CleanupOldTempFiles(Path.GetTempPath(), TimeSpan.FromDays(1));
+
 var detector = new FormatDetector();
 var sessions = new ConcurrentDictionary<string, Session>();
+var logger = app.Logger;
 
 app.MapPost("/api/upload", async (HttpRequest request) =>
 {
@@ -53,6 +57,7 @@ app.MapPost("/api/download/{id}", async (string id, HttpRequest request) =>
     if (!sessions.TryGetValue(id, out var session))
         return Results.BadRequest(new { error = "Oturum bulunamadı veya süresi doldu. Dosyayı yeniden yükleyin." });
 
+    var sw = Stopwatch.StartNew();
     try
     {
         var body = await JsonNode.ParseAsync(request.Body, documentOptions: new()
@@ -62,14 +67,23 @@ app.MapPost("/api/download/{id}", async (string id, HttpRequest request) =>
         });
         session.Document.Root = body?["root"];
         byte[] bytes = detector.Encode(session.Document);
+        logger.LogInformation(
+            "Download succeeded: file={FileName} format={Format} durationMs={DurationMs}",
+            session.Document.FileName, session.Document.FormatId, sw.ElapsedMilliseconds);
         return Results.File(bytes, "application/octet-stream", session.Document.FileName);
     }
     catch (SaveFormatException ex)
     {
+        logger.LogWarning(ex,
+            "Download failed: file={FileName} format={Format} durationMs={DurationMs}",
+            session.Document.FileName, session.Document.FormatId, sw.ElapsedMilliseconds);
         return Results.BadRequest(new { error = ex.Message });
     }
     catch (Exception ex)
     {
+        logger.LogError(ex,
+            "Download failed: file={FileName} format={Format} durationMs={DurationMs}",
+            session.Document.FileName, session.Document.FormatId, sw.ElapsedMilliseconds);
         return Results.BadRequest(new { error = $"Kaydetme başarısız: {ex.Message}" });
     }
 });
@@ -78,11 +92,15 @@ app.Run();
 
 IResult Detect(byte[] data, string fileName, string? password)
 {
+    var sw = Stopwatch.StartNew();
     try
     {
         var doc = detector.Detect(data, fileName, new ReadContext { Password = password });
         string id = Guid.NewGuid().ToString("N");
         sessions[id] = new Session(doc, DateTime.UtcNow);
+        logger.LogInformation(
+            "Upload succeeded: file={FileName} format={Format} sizeBytes={SizeBytes} durationMs={DurationMs}",
+            fileName, doc.FormatId, data.Length, sw.ElapsedMilliseconds);
         return Results.Json(new
         {
             id,
@@ -98,10 +116,16 @@ IResult Detect(byte[] data, string fileName, string? password)
     }
     catch (SaveFormatException ex)
     {
+        logger.LogWarning(ex,
+            "Upload failed: file={FileName} sizeBytes={SizeBytes} durationMs={DurationMs}",
+            fileName, data.Length, sw.ElapsedMilliseconds);
         return Results.BadRequest(new { error = ex.Message });
     }
     catch (Exception ex)
     {
+        logger.LogError(ex,
+            "Upload failed: file={FileName} sizeBytes={SizeBytes} durationMs={DurationMs}",
+            fileName, data.Length, sw.ElapsedMilliseconds);
         return Results.BadRequest(new { error = $"Dosya çözümlenemedi: {ex.Message}" });
     }
 }
@@ -116,3 +140,7 @@ static void CleanupSessions(ConcurrentDictionary<string, Session> sessions)
 }
 
 internal sealed record Session(SaveDocument Document, DateTime Created);
+
+// Exposes the top-level statement's generated Program class so
+// WebApplicationFactory<Program> can be used from the test project.
+public partial class Program { }
