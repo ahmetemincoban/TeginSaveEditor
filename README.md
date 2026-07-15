@@ -1,70 +1,72 @@
+[Türkçe](README.tr.md) · **English**
+
 # Save Editor
 
-Oyun kayıt dosyalarını tarayıcıda düzenleyen web uygulaması ([saveeditonline.com](https://www.saveeditonline.com/) benzeri, tamamen yerel çalışır). Dosyayı yükleyin, format otomatik algılanır, değerleri ağaç görünümünde düzenleyin ve dosyayı geri indirin.
+A web app for editing game save files in your browser (similar to [saveeditonline.com](https://www.saveeditonline.com/), but fully local). Upload a save file, let the format be detected automatically, edit values in a tree view, and download the file back.
 
-## Özellikler
+## Features
 
-- Sürükle-bırak yükleme veya metin/base64 yapıştırma
-- Otomatik format ve sarmalayıcı (gzip/zlib/base64/LZString) algılama
-- Ağaç görünümünde düzenleme: anahtar/değer arama, öğe ekleme/silme, Ham JSON modu
-- Şifreli .es3 için şifre girişi (varsayılan şifreler otomatik denenir)
-- Tanınmayan ikili bölümler base64 olarak korunur — dosya her zaman geri yazılabilir
-- Dosyalar makinenizden çıkmaz; her şey yerel sunucu belleğinde işlenir
+- Drag-and-drop upload or text/base64 pasting
+- Automatic format and wrapper (gzip/zlib/base64/LZString) detection
+- Tree-view editing: key/value search, add/remove entries, raw JSON mode
+- Password input for encrypted .es3 files (common default passwords are tried automatically)
+- Unrecognized binary sections are preserved as base64 — the file can always be written back
+- Files never leave your machine; everything is processed in local server memory
 
-## Çalıştırma
+## Running
 
-Gereksinim: [.NET SDK 10](https://dotnet.microsoft.com/download) veya üzeri.
+Requires the [.NET SDK 10](https://dotnet.microsoft.com/download) or later.
 
 ```powershell
 dotnet run --project src/SaveEditor.Web --urls http://localhost:5210
-# Tarayıcıda açın: http://localhost:5210
+# Open in your browser: http://localhost:5210
 ```
 
-Testler: `dotnet test` &nbsp;·&nbsp; Dağıtım: `dotnet publish src/SaveEditor.Web -c Release -o publish`
+Tests: `dotnet test` &nbsp;·&nbsp; Publish: `dotnet publish src/SaveEditor.Web -c Release -o publish`
 
-> **Not:** Uygulama yalnızca yerel kullanım için tasarlandı (kimlik doğrulama yoktur); LAN/internete açmayın.
+> **Note:** The app is designed for local use only (there is no authentication); do not expose it to your LAN or the internet.
 
-## Desteklenen formatlar
+## Supported formats
 
-| Format | Uzantılar | Notlar |
+| Format | Extensions | Notes |
 |---|---|---|
-| RPG Maker MV | `.rpgsave` | LZString-Base64 açılır, JSON olarak düzenlenir |
-| RPG Maker MZ | `.rmmzsave` | zlib açılır, JSON olarak düzenlenir |
-| Ren'Py | `.save` | ZIP içindeki pickle `log` çözülür; paylaşılan referanslar, döngüler, `OrderedDict`/`RevertableDict` desenleri korunur |
-| Unity Easy Save 3 | `.es3` | Düz, gzip'li ve AES-şifreli (PBKDF2-SHA1, varsayılan şifre otomatik denenir) |
-| Unreal Engine 4/5 | `.sav` (GVAS) | Yaygın property tipleri düzenlenebilir; tanınmayanlar ham (base64) korunur, dosya her zaman bayt-uyumlu geri yazılır |
-| Godot / HTML oyunları | `.save`, `.dat`, ... | JSON + gzip/zlib/base64 sarmalayıcı kombinasyonları otomatik çözülür |
-| SQLite | `.sqlite`, `.db`, `.sav` | Tablolar JSON olarak düzenlenir; şema/indeksler korunarak geri yazılır |
-| RPG Maker XP/VX/VX Ace | `.rxdata`, `.rvdata`, `.rvdata2` | Ruby Marshal (4.8) çözülür; paylaşılan referanslar ve döngüler korunur |
-| Minecraft | `.dat` (ör. `level.dat`) | NBT; gzip'li dosyalar otomatik açılır |
-| JSON / XML / INI / metin | `.json`, `.xml`, `.ini`, `.cfg`, ... | Doğrudan düzenleme; XML/INI/metin UTF-8 ve UTF-16 (LE/BE) kodlamalarını destekler |
-| Bilinmeyen ikili | * | Base64 olarak görüntülenir, değiştirilmeden geri indirilebilir |
+| RPG Maker MV | `.rpgsave` | LZString-Base64 is unwrapped, edited as JSON |
+| RPG Maker MZ | `.rmmzsave` | zlib is unwrapped, edited as JSON |
+| Ren'Py | `.save` | The pickled `log` inside the ZIP is decoded; shared references, cycles and `OrderedDict`/`RevertableDict` patterns are preserved |
+| Unity Easy Save 3 | `.es3` | Plain, gzipped and AES-encrypted (PBKDF2-SHA1; default passwords are tried automatically) |
+| Unreal Engine 4/5 | `.sav` (GVAS) | Common property types are editable; unrecognized ones are preserved raw (base64) and the file always writes back byte-identical |
+| Godot / HTML games | `.save`, `.dat`, ... | JSON plus gzip/zlib/base64 wrapper combinations are unwrapped automatically |
+| SQLite | `.sqlite`, `.db`, `.sav` | Tables are edited as JSON; written back with schema/indexes preserved |
+| RPG Maker XP/VX/VX Ace | `.rxdata`, `.rvdata`, `.rvdata2` | Ruby Marshal (4.8) is decoded; shared references and cycles are preserved |
+| Minecraft | `.dat` (e.g. `level.dat`) | NBT; gzipped files are unwrapped automatically |
+| JSON / XML / INI / text | `.json`, `.xml`, `.ini`, `.cfg`, ... | Direct editing; XML/INI/text support UTF-8 and UTF-16 (LE/BE) encodings |
+| Unknown binary | * | Displayed as base64, can be downloaded back unchanged |
 
-Sarmalayıcı katmanlar (gzip, zlib, base64, LZString) özyinelemeli olarak açılır ve indirirken aynı sırayla geri uygulanır — ör. `base64(gzip(json))` bir dosya otomatik çözülür.
+Wrapper layers (gzip, zlib, base64, LZString) are unwrapped recursively and re-applied in the same order on download — e.g. a `base64(gzip(json))` file is decoded automatically.
 
-## Mimari
+## Architecture
 
 ```
-src/SaveEditor.Core   – format algılama + çözücüler (bağımsız kütüphane)
-  FormatDetector      – format/sarmalayıcı algılama hattı
-  Wrappers            – gzip, zlib, base64, lz-string katmanları
-  Formats/            – ISaveFormat uygulamaları (JSON, ES3, GVAS, Ren'Py, SQLite, NBT, ...)
-  Pickle/             – Python pickle okuyucu/yazıcı (protokol 0-5) + JSON köprüsü
-  Marshal/            – Ruby Marshal (4.8) okuyucu/yazıcı + JSON köprüsü
-src/SaveEditor.Web    – ASP.NET Core API + tarayıcı arayüzü (wwwroot)
-tests/SaveEditor.Tests – round-trip testleri
+src/SaveEditor.Core   – format detection + codecs (standalone library)
+  FormatDetector      – format/wrapper detection pipeline
+  Wrappers            – gzip, zlib, base64, lz-string layers
+  Formats/            – ISaveFormat implementations (JSON, ES3, GVAS, Ren'Py, SQLite, NBT, ...)
+  Pickle/             – Python pickle reader/writer (protocols 0-5) + JSON bridge
+  Marshal/            – Ruby Marshal (4.8) reader/writer + JSON bridge
+src/SaveEditor.Web    – ASP.NET Core API + browser UI (wwwroot)
+tests/SaveEditor.Tests – round-trip tests
 ```
 
-Doğrulama notları: pickle motoru gerçek CPython çıktılarıyla çapraz doğrulandı (paylaşılan referanslar, döngüler, set/frozenset, OrderedDict, büyük tamsayılar dahil); GVAS gerçek oyun kayıtlarıyla (Deep Rock Galactic dahil) **bayt-uyumlu** round-trip verir; Ren'Py çıktıları CPython `pickle.loads` ile yapısal olarak birebir doğrulanmıştır. JSON'un temsil edemediği özel float değerleri (NaN, ±Infinity, -0.0) etiketli olarak taşınır ve kayıpsız geri yazılır.
+Validation notes: the pickle engine is cross-validated against real CPython output (including shared references, cycles, set/frozenset, OrderedDict and big integers); the Ruby Marshal engine is validated byte-for-byte against real Ruby 3.3 `Marshal.dump` output (including object-link identity and the Fixnum/Bignum boundary); GVAS round-trips **byte-identical** against real game saves (including Deep Rock Galactic); Ren'Py output is verified structurally identical via CPython `pickle.loads`. Special float values JSON cannot represent (NaN, ±Infinity, -0.0) are carried tagged and written back losslessly.
 
-Her format `Read` ile düzenlenebilir bir JSON ağacına açılır ve `Write` ile orijinal ikili biçimine geri döner. İkilik formatlarda tanınmayan bölümler `{"__raw": "<base64>"}` düğümleriyle bayt-uyumlu taşınır; Python'a özgü değerler `{"py": "tuple" | "global" | "reduce" | ...}` etiketiyle temsil edilir.
+Each format is decoded by `Read` into an editable JSON tree and encoded back to its original binary form by `Write`. In binary formats, unrecognized sections travel byte-identical as `{"__raw": "<base64>"}` nodes; Python-specific values are represented with `{"py": "tuple" | "global" | "reduce" | ...}` tags.
 
-## Bilinen sınırlamalar
+## Known limitations
 
-- GVAS `Int64Property`/`UInt64Property` ve pickle'daki Python `int` değerleri 2^53'ten büyük olsa da etiketlenerek (string olarak) taşınır ve tarayıcı JSON'unda hassasiyet kaybetmez. Düz JSON/XML/INI gibi salt metin formatlarında böyle bir etiketleme yoktur: 2^53'ten büyük tamsayılar içeren düğümler tarayıcıda düzenlenirse hassasiyet kaybedebilir.
-- Düz JSON formatında `-0.0` ve `NaN`/`Infinity` gibi özel float değerleri JSON'un kendi sınırı gereği kayıpsız taşınmaz (bu formatta bilinçli olarak düzeltilmedi). GVAS ve pickle'da bu değerler ayrıca etiketlenerek kayıpsız korunur.
-- GVAS `MapProperty` / `TextProperty` salt-ham (base64) taşınır, alan alan düzenlenemez.
-- Flash `.sol` (AMF) henüz desteklenmiyor.
-- INI dosyalarında yorum satırları kaydederken korunmaz.
+- GVAS `Int64Property`/`UInt64Property` values and Python `int` values in pickle survive above 2^53 by being carried tagged (as strings), so they lose no precision in browser JSON. Plain text formats such as JSON/XML/INI have no such tagging: nodes containing integers above 2^53 may lose precision if edited in the browser.
+- In the plain JSON format, special float values such as `-0.0` and `NaN`/`Infinity` are not carried losslessly due to JSON's own limits (deliberately left as-is for that format). In GVAS and pickle these values are tagged and preserved losslessly.
+- GVAS `MapProperty` / `TextProperty` travel raw-only (base64) and cannot be edited field by field.
+- Flash `.sol` (AMF) is not supported yet.
+- INI comment lines are not preserved on save.
 
-**Önemli:** Düzenlemeden önce kayıt dosyanızın yedeğini alın.
+**Important:** Back up your save file before editing.
