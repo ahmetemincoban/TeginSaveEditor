@@ -194,3 +194,14 @@ button.ghost { background: transparent; }
   font-family: var(--mono); font-size: 13px; margin-top: 12px;
 }
 .raw-actions { display: flex; gap: 12px; align-items: center; margin-top: 8px; }
+
+/* Language switcher */
+#lang-switch {
+  position: absolute; top: 12px; right: 16px; display: flex; gap: 4px;
+}
+#lang-switch button {
+  padding: 4px 10px; font-size: 12px; background: transparent; color: var(--text-dim);
+}
+#lang-switch button.active {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}

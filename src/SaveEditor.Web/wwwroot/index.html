@@ -3,14 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Save Editor — Oyun Kayıt Dosyası Düzenleyici</title>
+<title>Save Editor</title>
 <link rel="stylesheet" href="style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💾</text></svg>">
 </head>
 <body>
+<div id="lang-switch">
+  <button type="button" data-lang="tr">TR</button>
+  <button type="button" data-lang="en">EN</button>
+</div>
 <header>
   <h1>💾 Save Editor</h1>
-  <p class="subtitle">Oyun kayıt dosyanı yükle, formatı otomatik algılansın, değerleri düzenle ve geri indir.</p>
+  <p class="subtitle" data-i18n="subtitle"></p>
   <p class="formats">RPG Maker (.rpgsave, .rmmzsave, .rxdata, .rvdata, .rvdata2) · Ren'Py (.save) · Unity (.es3) · Unreal (.sav GVAS) · Godot · SQLite · Minecraft (.dat) · JSON · XML · INI · gzip/zlib/base64</p>
 </header>
 
@@ -19,18 +23,18 @@
   <section id="upload-screen">
     <div id="dropzone" tabindex="0">
       <div class="dz-icon">📂</div>
-      <div class="dz-text">Dosyayı buraya sürükle<br><span>veya tıklayıp seç</span></div>
+      <div class="dz-text"><span data-i18n="dropText"></span><br><span data-i18n="dropOr"></span></div>
       <input type="file" id="file-input" hidden>
     </div>
     <div class="upload-options">
-      <label class="pw-label">Şifre (gerekliyse, örn. şifreli .es3):
-        <input type="password" id="password" placeholder="varsayılan otomatik denenir" autocomplete="off">
+      <label class="pw-label"><span data-i18n="passwordLabel"></span>
+        <input type="password" id="password" data-i18n-placeholder="passwordPlaceholder" autocomplete="off">
       </label>
-      <button id="paste-toggle" class="ghost">✂ Metin / kod yapıştır</button>
+      <button id="paste-toggle" class="ghost" data-i18n="pasteToggle"></button>
     </div>
     <div id="paste-area" hidden>
-      <textarea id="paste-text" placeholder="Base64, JSON veya kayıt metnini buraya yapıştırın..."></textarea>
-      <button id="paste-submit">Çözümle</button>
+      <textarea id="paste-text" data-i18n-placeholder="pastePlaceholder"></textarea>
+      <button id="paste-submit" data-i18n="pasteSubmit"></button>
     </div>
     <div id="upload-error" class="error" hidden></div>
   </section>
@@ -45,22 +49,22 @@
         <span id="fi-size" class="badge subtle"></span>
       </div>
       <div class="fi-right">
-        <button id="btn-view-toggle" class="ghost">{ } Ham JSON</button>
-        <button id="btn-download" class="primary">⬇ İndir</button>
-        <button id="btn-reset" class="ghost">✕ Kapat</button>
+        <button id="btn-view-toggle" class="ghost" data-i18n="rawJson"></button>
+        <button id="btn-download" class="primary" data-i18n="download"></button>
+        <button id="btn-reset" class="ghost" data-i18n="close"></button>
       </div>
     </div>
     <div id="warnings"></div>
 
     <div id="toolbar">
-      <input type="search" id="search" placeholder="Anahtar veya değer ara (ör. gold, hp, para)...">
+      <input type="search" id="search" data-i18n-placeholder="searchPlaceholder">
       <span id="search-filters">
-        <label><input type="checkbox" id="filter-keys" checked> anahtar</label>
-        <label><input type="checkbox" id="filter-values" checked> değer</label>
-        <label><input type="checkbox" id="filter-exact"> tam eşleşme</label>
+        <label><input type="checkbox" id="filter-keys" checked> <span data-i18n="filterKeys"></span></label>
+        <label><input type="checkbox" id="filter-values" checked> <span data-i18n="filterValues"></span></label>
+        <label><input type="checkbox" id="filter-exact"> <span data-i18n="filterExact"></span></label>
       </span>
-      <button id="btn-expand" class="ghost">＋ Genişlet</button>
-      <button id="btn-collapse" class="ghost">－ Daralt</button>
+      <button id="btn-expand" class="ghost" data-i18n="expand"></button>
+      <button id="btn-collapse" class="ghost" data-i18n="collapse"></button>
     </div>
     <div id="search-results" hidden></div>
 
@@ -69,7 +73,7 @@
     <div id="raw-editor" hidden>
       <textarea id="raw-text" spellcheck="false"></textarea>
       <div class="raw-actions">
-        <button id="raw-apply" class="primary">Uygula</button>
+        <button id="raw-apply" class="primary" data-i18n="apply"></button>
         <span id="raw-error" class="error"></span>
       </div>
     </div>
@@ -77,9 +81,10 @@
 </main>
 
 <footer>
-  <p>Tüm işlem yerel sunucunuzda yapılır; dosyalar hiçbir yere gönderilmez. Düzenlemeden önce kayıt dosyanızı yedekleyin!</p>
+  <p data-i18n="footer"></p>
 </footer>
 
+<script src="i18n.js"></script>
 <script src="pure.js"></script>
 <script src="app.js"></script>
 </body>

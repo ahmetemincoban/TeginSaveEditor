@@ -70,10 +70,10 @@ async function detectRequest(url, body, headers) {
   try {
     const res = await fetch(url, { method: "POST", body, headers: headers || undefined });
     const json = await res.json();
-    if (!res.ok) { showError(json.error || "Bilinmeyen hata."); return; }
+    if (!res.ok) { showError(json.error || t("unknownError")); return; }
     openEditor(json);
   } catch (err) {
-    showError("Sunucuya ulaşılamadı: " + err.message);
+    showError(t("serverUnreachable") + err.message);
   } finally {
     dropzone.classList.remove("busy");
   }
@@ -94,12 +94,25 @@ function openEditor(info) {
   state.rawMode = false;
   state.dirty = false;
 
+  state.lastInfo = info;
+
   $("#upload-screen").hidden = true;
   $("#editor-screen").hidden = false;
 
+  renderFileInfo();
+
+  $("#search").value = "";
+  $("#search-results").hidden = true;
+  renderTree();
+  setRawMode(typeof state.data === "string"); // text/xml formats edit as raw text
+}
+
+function renderFileInfo() {
+  const info = state.lastInfo;
+  if (!info) return;
   $("#fi-name").textContent = info.fileName;
   $("#fi-format").textContent = info.formatName;
-  $("#fi-wrappers").textContent = info.wrappers && info.wrappers.length ? "sarmal: " + info.wrappers.join(" → ") : "";
+  $("#fi-wrappers").textContent = info.wrappers && info.wrappers.length ? t("wrappersLabel") + info.wrappers.join(" → ") : "";
   $("#fi-size").textContent = formatSize(info.size);
 
   const warnings = $("#warnings");
@@ -113,18 +126,13 @@ function openEditor(info) {
   if (!info.editable) {
     const div = document.createElement("div");
     div.className = "warn";
-    div.textContent = "⚠ Bu dosya salt okunur açıldı; indirme orijinal veriyi üretir.";
+    div.textContent = "⚠ " + t("readonlyWarning");
     warnings.appendChild(div);
   }
-
-  $("#search").value = "";
-  $("#search-results").hidden = true;
-  renderTree();
-  setRawMode(typeof state.data === "string"); // text/xml formats edit as raw text
 }
 
 $("#btn-reset").addEventListener("click", () => {
-  if (state.dirty && !confirm("Kaydedilmemiş değişiklikler kaybolur. Kapatılsın mı?")) return;
+  if (state.dirty && !confirm(t("confirmClose"))) return;
   state.id = null;
   state.dirty = false;
   $("#editor-screen").hidden = true;
@@ -136,7 +144,7 @@ $("#btn-download").addEventListener("click", async () => {
   if (state.rawMode && !applyRaw()) return;
   const btn = $("#btn-download");
   btn.disabled = true;
-  btn.textContent = "Hazırlanıyor...";
+  btn.textContent = t("preparing");
   try {
     const res = await fetch("/api/download/" + state.id, {
       method: "POST",
@@ -145,7 +153,7 @@ $("#btn-download").addEventListener("click", async () => {
     });
     if (!res.ok) {
       const json = await res.json().catch(() => ({}));
-      alert("Hata: " + (json.error || res.statusText));
+      alert(t("errorPrefix") + (json.error || res.statusText));
       return;
     }
     const blob = await res.blob();
@@ -157,7 +165,7 @@ $("#btn-download").addEventListener("click", async () => {
     state.dirty = false;
   } finally {
     btn.disabled = false;
-    btn.textContent = "⬇ İndir";
+    btn.textContent = t("download");
   }
 });
 
@@ -177,7 +185,7 @@ function setRawMode(on) {
   $("#tree").hidden = on;
   $("#toolbar").style.display = on ? "none" : "";
   $("#search-results").hidden = true;
-  $("#btn-view-toggle").textContent = on ? "🌳 Ağaç Görünümü" : "{ } Ham JSON";
+  $("#btn-view-toggle").textContent = on ? t("treeView") : t("rawJson");
   $("#raw-error").textContent = "";
   if (on) {
     $("#raw-text").value = typeof state.data === "string"
@@ -204,7 +212,7 @@ function applyRaw() {
     $("#raw-error").textContent = "";
     return true;
   } catch (err) {
-    $("#raw-error").textContent = "Geçersiz JSON: " + err.message;
+    $("#raw-error").textContent = t("invalidJson") + err.message;
     return false;
   }
 }
@@ -215,7 +223,7 @@ let rootApi = null;
 
 function renderTree() {
   treeEl.innerHTML = "";
-  rootApi = buildNode("(kök)", { get: () => state.data, set: (v) => (state.data = v) }, [], 0, null);
+  rootApi = buildNode(t("rootLabel"), { get: () => state.data, set: (v) => (state.data = v) }, [], 0, null);
   treeEl.appendChild(rootApi.el);
   rootApi.expand();
 }
@@ -271,7 +279,7 @@ function buildNode(label, accessor, path, depth, parentApi) {
     countEl.className = "count";
     const updateCount = () => {
       const n = entries().length;
-      countEl.textContent = (Array.isArray(value) ? "[" + n + " öğe]" : "{" + n + " alan}");
+      countEl.textContent = Array.isArray(value) ? t("itemsCount", { n }) : t("fieldsCount", { n });
     };
     updateCount();
     row.appendChild(countEl);
@@ -328,7 +336,7 @@ function buildNode(label, accessor, path, depth, parentApi) {
           moreBtn = document.createElement("button");
           moreBtn.type = "button";
           moreBtn.className = "sr-more load-more";
-          moreBtn.textContent = "Daha fazla göster (" + (keys.length - rendered) + " öğe kaldı)";
+          moreBtn.textContent = t("showMore", { n: keys.length - rendered });
           moreBtn.addEventListener("click", renderBatch);
           childrenEl.appendChild(moreBtn);
         }
@@ -354,21 +362,21 @@ function buildNode(label, accessor, path, depth, parentApi) {
     actions.className = "row-actions";
     const addBtn = document.createElement("button");
     addBtn.className = "add";
-    addBtn.title = "Öğe ekle";
+    addBtn.title = t("addItem");
     addBtn.textContent = "＋";
     addBtn.addEventListener("click", () => {
       let key;
       if (Array.isArray(value)) {
         key = value.length;
       } else {
-        key = prompt("Yeni alan adı:");
+        key = prompt(t("newFieldName"));
         if (!key) return;
-        if (Object.prototype.hasOwnProperty.call(value, key)) { alert("Bu alan zaten var."); return; }
+        if (Object.prototype.hasOwnProperty.call(value, key)) { alert(t("fieldExists")); return; }
       }
-      const raw = prompt("Değer (JSON — ör. 0, \"metin\", true, {}):", "0");
+      const raw = prompt(t("valuePrompt"), "0");
       if (raw === null) return;
       let parsed;
-      try { parsed = JSON.parse(raw); } catch { alert("Geçersiz JSON değeri."); return; }
+      try { parsed = JSON.parse(raw); } catch { alert(t("invalidJsonValue")); return; }
       value[key] = parsed;
       markDirty();
       api.expand();
@@ -397,10 +405,10 @@ function addRowActions(childApi, container, key, parentApi) {
     return a;
   })();
   const del = document.createElement("button");
-  del.title = "Sil";
+  del.title = t("deleteItem");
   del.textContent = "🗑";
   del.addEventListener("click", () => {
-    if (!confirm("Bu öğe silinsin mi?")) return;
+    if (!confirm(t("confirmDelete"))) return;
     if (Array.isArray(container)) container.splice(key, 1);
     else delete container[key];
     markDirty();
@@ -416,7 +424,7 @@ function makeValueEl(accessor) {
     const type = valueTypeOf(v);
     span.className = "val " + type;
     span.textContent = v === null ? "null" : type === "string" ? JSON.stringify(v) : String(v);
-    span.title = "Düzenlemek için tıkla";
+    span.title = t("clickToEdit");
   };
   paint();
 
@@ -429,10 +437,10 @@ function makeValueEl(accessor) {
 
     const typeSel = document.createElement("select");
     typeSel.className = "val-type";
-    VALUE_TYPES.forEach(({ type, label }) => {
+    VALUE_TYPES.forEach(({ type, labelKey }) => {
       const opt = document.createElement("option");
       opt.value = type;
-      opt.textContent = label;
+      opt.textContent = t(labelKey);
       typeSel.appendChild(opt);
     });
     typeSel.value = initialType;
@@ -461,7 +469,7 @@ function makeValueEl(accessor) {
       const result = parseByType(input.value, typeSel.value);
       if (!result.ok) {
         input.classList.add("invalid");
-        input.title = result.error;
+        input.title = t(result.error);
         return;
       }
       done = true;
@@ -556,7 +564,7 @@ function runSearch() {
   if (!results.length) {
     const div = document.createElement("div");
     div.className = "sr-more";
-    div.textContent = "Sonuç yok.";
+    div.textContent = t("noResults");
     panel.appendChild(div);
     return;
   }
@@ -579,7 +587,7 @@ function runSearch() {
   if (results.length >= LIMIT) {
     const div = document.createElement("div");
     div.className = "sr-more";
-    div.textContent = "İlk " + LIMIT + " sonuç gösteriliyor; aramayı daraltın.";
+    div.textContent = t("firstNResults", { n: LIMIT });
     panel.appendChild(div);
   }
 }
@@ -604,4 +612,15 @@ function formatSize(bytes) {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
   return (bytes / 1024 / 1024).toFixed(1) + " MB";
+}
+
+// Called by i18n.js after the language changes: refresh every dynamic text
+// that isn't covered by data-i18n attributes.
+function onLanguageChange() {
+  if (state.id === null) return;
+  renderFileInfo();
+  $("#btn-view-toggle").textContent = state.rawMode ? t("treeView") : t("rawJson");
+  if (!$("#btn-download").disabled) $("#btn-download").textContent = t("download");
+  if (!state.rawMode) renderTree();
+  runSearch();
 }

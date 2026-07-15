@@ -5,11 +5,12 @@
 // scripts/check-pure.js. Loaded as a normal <script> before app.js; in the
 // browser these just become globals like everything else in this project.
 
+// labelKey values are i18n dictionary keys, resolved with t() at render time.
 const VALUE_TYPES = [
-  { type: "string", label: "metin" },
-  { type: "number", label: "sayı" },
-  { type: "boolean", label: "mantıksal" },
-  { type: "null", label: "null" },
+  { type: "string", labelKey: "typeString" },
+  { type: "number", labelKey: "typeNumber" },
+  { type: "boolean", labelKey: "typeBoolean" },
+  { type: "null", labelKey: "typeNull" },
 ];
 
 function valueTypeOf(v) { return v === null ? "null" : typeof v; }
@@ -22,19 +23,20 @@ function textForType(v, type) {
 }
 
 /// Parses `text` as an explicit target `type` ("string"/"number"/"boolean"/"null").
+/// On failure, `error` is an i18n key for the caller to resolve with t().
 function parseByType(text, type) {
   const t = text.trim();
   if (type === "null") return { ok: true, value: null };
   if (type === "number") {
-    if (t === "") return { ok: false, error: "Sayı girin" };
+    if (t === "") return { ok: false, error: "errEnterNumber" };
     const n = Number(t);
-    if (!Number.isFinite(n)) return { ok: false, error: "Geçersiz sayı" };
+    if (!Number.isFinite(n)) return { ok: false, error: "errInvalidNumber" };
     return { ok: true, value: n };
   }
   if (type === "boolean") {
     if (t === "true" || t === "1") return { ok: true, value: true };
     if (t === "false" || t === "0") return { ok: true, value: false };
-    return { ok: false, error: "true veya false girin" };
+    return { ok: false, error: "errEnterBoolean" };
   }
   // string: keep verbatim (untrimmed, so leading/trailing spaces are preserved)
   return { ok: true, value: text };
